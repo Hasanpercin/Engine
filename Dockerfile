@@ -9,6 +9,11 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+
+
 COPY . .
 
 ENV SE_EPHE_PATH=/ephe
