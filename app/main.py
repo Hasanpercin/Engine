@@ -57,7 +57,10 @@ except Exception:
 # Diğer router örneği: electional
 try:
     from app.api.routers import electional  # type: ignore
+    # Not: electional.router içinde ayrıca prefix tanımlamadıysan,
+    # burada prefix'i veriyoruz; tam path: /electional/<route>
     app.include_router(electional.router, prefix="/electional", tags=["electional"])
-except Exception:
+except Exception as e:
     # Router yoksa servis yine ayağa kalksın; sağlık ucu yeter.
-    pass
+    import logging
+    logging.getLogger("uvicorn.error").warning("Electional router DISABLED: %s", e)
