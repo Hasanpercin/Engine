@@ -15,6 +15,7 @@ pytz>=2022.7,<2023.0           # Timezone handling
 timezonefinder~=5.2            # immanuel 1.4.2 bunu bekliyor          # Timezone from coordinates
 geopy==2.4.1                   # Geocoding and location services
 python-dateutil==2.8.2         # Date parsing and manipulation
+fastapi-limiter>=0.1.6  # Rate limit için gerekli (import: fastapi_limiter)
 
 # Numerology (custom implementation)
 # No external library needed - will implement from scratch
