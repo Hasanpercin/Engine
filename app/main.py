@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from app.api.routers import electional, health
 from app.utils.rate_limit import init_rate_limiter
+from contextlib import asynccontextmanager
 
 load_dotenv()
 
@@ -17,6 +18,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_rate_limiter()
+    yield
+
+app = FastAPI(lifespan=lifespan)
 
 @app.on_event("startup")
 async def on_startup():
