@@ -4,6 +4,11 @@ from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter
 import redis.asyncio as redis
 
+async def init_rate_limiter():
+    r = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"),
+                       encoding="utf-8", decode_responses=True)
+    await FastAPILimiter.init(r)
+
 FREE_HOURLY_LIMIT = int(os.getenv("FREE_HOURLY_LIMIT", "100"))
 PRO_HOURLY_LIMIT = int(os.getenv("PRO_HOURLY_LIMIT", "2000"))
 
