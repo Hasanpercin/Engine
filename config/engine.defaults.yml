@@ -1,0 +1,36 @@
+zodiac: tropical
+house_system: placidus
+ayanamsa: lahiri
+coordinates: geocentric
+bodies:
+  include: [sun, moon, mercury, venus, mars, jupiter, saturn, uranus, neptune, pluto, nodes, chiron]
+aspects:
+  majors: [conjunction, opposition, trine, square, sextile]
+  orbs:
+    default:
+      conjunction: 8
+      opposition: 8
+      trine: 7
+      square: 6
+      sextile: 5
+    luminary_bonus: 2
+    outer_penalty: 1
+lunar_phase:
+  method: elongation
+electional:
+  step_minutes: 15
+  avoid: { merc_rx: true, moon_voc: true }
+  weights:
+    moon_phase: 2
+    dignities: 2
+    aspects: 3
+    retrogrades: -3
+part_of_fortune:
+  sect_sensitive: true
+api:
+  auth: api_key
+  rate_limit:
+    window_seconds: 3600
+    free_per_window: 100
+    pro_per_window: 2000
+i18n: [tr, en]
