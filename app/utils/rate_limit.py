@@ -3,6 +3,7 @@
 Rate limit altyapısı (fastapi-limiter + Redis).
 - Fail-open: Redis'e bağlanılamazsa servis yine başlar, yalnızca rate limit devre dışı kalır.
 - PLAN bazlı limit: FREE / PRO değerleri env'den okunur.
+
 Kullanım (router'da):
     from fastapi import Depends
     from app.utils.rate_limit import plan_limiter
@@ -18,7 +19,7 @@ from typing import Optional
 
 try:
     import redis.asyncio as redis  # redis==5.x ile gelir
-except Exception as e:  # pragma: no cover
+except Exception:  # pragma: no cover
     redis = None  # type: ignore
 
 try:
@@ -26,8 +27,10 @@ try:
     from fastapi_limiter.depends import RateLimiter
 except Exception:  # pragma: no cover
     FastAPILimiter = None  # type: ignore
+    RateLimiter = None  # type: ignore
 
 LOGGER = logging.getLogger("uvicorn.error")
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     val = os.getenv(name)
@@ -35,14 +38,17 @@ def _env_bool(name: str, default: bool = False) -> bool:
         return default
     return val.strip().lower() in {"1", "true", "yes", "on"}
 
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, "").strip() or default)
     except Exception:
         return default
 
+
 def is_rate_limit_disabled() -> bool:
     return _env_bool("RATE_LIMIT_DISABLED", False)
+
 
 def _plan_limits(plan: str) -> tuple[int, int]:
     """Saatlik limitler: (times, seconds)"""
@@ -52,6 +58,7 @@ def _plan_limits(plan: str) -> tuple[int, int]:
     else:
         times = _env_int("FREE_HOURLY_LIMIT", 100)
     return times, 3600
+
 
 async def init_rate_limiter(app: Optional["FastAPI"] = None) -> None:
     """
@@ -80,7 +87,9 @@ async def init_rate_limiter(app: Optional["FastAPI"] = None) -> None:
 
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
     try:
-        r = redis.from_url(redis_url, encoding="utf-8", decode_responses=True)  # type: ignore
+        r = redis.from_url(  # type: ignore
+            redis_url, encoding="utf-8", decode_responses=True
+        )
         await FastAPILimiter.init(r)  # type: ignore
         LOGGER.info("Rate limiter: ENABLED (redis=%s)", redis_url)
         if app is not None:
@@ -95,6 +104,7 @@ async def init_rate_limiter(app: Optional["FastAPI"] = None) -> None:
                 app.state.rate_limiter_enabled = False  # type: ignore[attr-defined]
             except Exception:
                 pass
+
 
 def plan_limiter(plan: str = "FREE"):
     """
