@@ -2,54 +2,55 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Dict, Tuple
 
+# Swiss Ephemeris (bazı ortamlarda pyswisseph adıyla gelir)
 try:
     import swisseph as swe
-except Exception:
+except Exception:  # pragma: no cover
     import pyswisseph as swe  # type: ignore
 
-# Ephemeris yolu
+# Ephemeris yolu (Docker'da /app/ephe)
 swe.set_ephe_path(os.getenv("SE_EPHE_PATH", "/app/ephe"))
-
-# Gezegen ID’leri
-PLANETS = {
-    "sun": swe.SUN, "moon": swe.MOON, "mercury": swe.MERCURY, "venus": swe.VENUS,
-    "mars": swe.MARS, "jupiter": swe.JUPITER, "saturn": swe.SATURN,
-    "uranus": swe.URANUS, "neptune": swe.NEPTUNE, "pluto": swe.PLUTO
-}
 
 _SWE_FLAGS = swe.FLG_SWIEPH | swe.FLG_SPEED
 
-# --- JD <-> ISO ---
+# Kullanacağımız gezegenler
+PLANET_IDS: Dict[str, int] = {
+    "sun": swe.SUN,
+    "moon": swe.MOON,
+    "mercury": swe.MERCURY,
+    "venus": swe.VENUS,
+    "mars": swe.MARS,
+    "jupiter": swe.JUPITER,
+    "saturn": swe.SATURN,
+    "uranus": swe.URANUS,
+    "neptune": swe.NEPTUNE,
+    "pluto": swe.PLUTO,
+}
+
 def to_jd(dt_utc: datetime) -> float:
+    """UTC datetime -> Julian Day (UT)."""
     dt_utc = dt_utc.astimezone(timezone.utc)
     hourf = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
     return swe.julday(dt_utc.year, dt_utc.month, dt_utc.day, hourf, swe.GREG_CAL)
 
-def jd_to_iso(jd: float) -> str:
-    y, m, d, h = swe.revjul(jd, swe.GREG_CAL)
-    hh = int(h)
-    mm = int(round((h - hh) * 60))
-    base = datetime(y, m, d, 0, 0, tzinfo=timezone.utc)
-    return (base + timedelta(hours=hh, minutes=mm)).isoformat()
+def planet_lon_speed(jd_ut: float, pid: int) -> Tuple[float, float]:
+    """Gezegen ekliptik boylamı ve hız (deg/day)."""
+    xx, _ = swe.calc_ut(jd_ut, pid, _SWE_FLAGS)
+    lon = xx[0] % 360.0
+    lon_speed = xx[3]
+    return lon, lon_speed
 
-# --- Pozisyonlar ---
-def planet_lon_speed(jd_utc: float, planet: int) -> Tuple[float, float]:
-    xx, _ = swe.calc_ut(jd_utc, planet, _SWE_FLAGS)
-    return xx[0] % 360.0, xx[3]
+def all_planets(jd_ut: float) -> Dict[str, Tuple[float, float]]:
+    """Tüm gezegenler için (lon, speed) sözlüğü."""
+    return {name: planet_lon_speed(jd_ut, pid) for name, pid in PLANET_IDS.items()}
 
-def all_planets(jd_utc: float) -> Dict[str, Tuple[float, float]]:
-    out: Dict[str, Tuple[float, float]] = {}
-    for name, pid in PLANETS.items():
-        lon, spd = planet_lon_speed(jd_utc, pid)
-        out[name] = (lon, spd)
-    return out
-
-def norm360(a: float) -> float:
+def angle_norm(a: float) -> float:
     return a % 360.0
 
 def angle_diff(a: float, b: float) -> float:
-    d = abs(norm360(a - b))
-    return d if d <= 180 else 360 - d
+    """İki açı arasındaki en küçük fark [0,180]."""
+    d = abs(angle_norm(a - b))
+    return d if d <= 180.0 else 360.0 - d
