@@ -57,8 +57,8 @@ except Exception:
 # Diğer router örneği: electional
 try:
     from app.api.routers import electional  # type: ignore
-    # Not: electional.router içinde ayrıca prefix tanımlamadıysan,
-    # burada prefix'i veriyoruz; tam path: /electional/<route>
+    # Not: electional.router içinde prefix TANIMLI DEĞİL.
+    # Burada prefix'i veriyoruz; tam path: /electional/<route>
     app.include_router(electional.router, prefix="/electional", tags=["electional"])
 except Exception as e:
     # Router yoksa servis yine ayağa kalksın; sağlık ucu yeter.
