@@ -53,6 +53,12 @@ except Exception:
     @app.get("/healthz")
     async def _healthz():
         return {"status": "ok"}
+try:
+    from app.api.routers import lunar  # bu turn'de eklediğimiz dosya
+    app.include_router(lunar.router, prefix="/lunar", tags=["lunar"])
+except Exception as e:
+    import logging
+    logging.getLogger("uvicorn.error").warning("Lunar router DISABLED: %s", e)
 
 # Diğer router örneği: electional
 try:
