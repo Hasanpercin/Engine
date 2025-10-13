@@ -53,81 +53,92 @@ except Exception:
     @app.get("/healthz")
     async def _healthz():
         return {"status": "ok"}
+
+# Lunar
 try:
-    from app.api.routers import lunar  # bu turn'de eklediğimiz dosya
+    from app.api.routers import lunar  # type: ignore
     app.include_router(lunar.router, prefix="/lunar", tags=["lunar"])
 except Exception as e:
     import logging
     logging.getLogger("uvicorn.error").warning("Lunar router DISABLED: %s", e)
 
+# Eclipses
 try:
     from app.api.routers import eclipses  # type: ignore
     app.include_router(eclipses.router, prefix="/eclipses", tags=["eclipses"])
 except Exception as e:
-    import logging; logging.getLogger("uvicorn.error").warning("Eclipses router DISABLED: %s", e)
+    import logging
+    logging.getLogger("uvicorn.error").warning("Eclipses router DISABLED: %s", e)
 
+# Synastry
 try:
     from app.api.routers import synastry  # type: ignore
     app.include_router(synastry.router, prefix="/synastry", tags=["synastry"])
 except Exception as e:
-    import logging; logging.getLogger("uvicorn.error").warning("Synastry router DISABLED: %s", e)
+    import logging
+    logging.getLogger("uvicorn.error").warning("Synastry router DISABLED: %s", e)
 
+# Composite & Davison  (prefix VERME!)
 try:
     from app.api.routers import composite  # type: ignore
-    app.include_router(composite.router, prefix="/", tags=["composite"])
+    app.include_router(composite.router, tags=["composite"])
 except Exception as e:
     import logging
     logging.getLogger("uvicorn.error").warning("Composite router DISABLED: %s", e)
 
-try:
-    from app.api.routers import composite  # type: ignore
-    app.include_router(composite.router, prefix="/", tags=["composite"])
-except Exception as e:
-    import logging; logging.getLogger("uvicorn.error").warning("Composite router DISABLED: %s", e)
-
+# Returns
 try:
     from app.api.routers import returns  # type: ignore
     app.include_router(returns.router, prefix="/returns", tags=["returns"])
 except Exception as e:
-    import logging; logging.getLogger("uvicorn.error").warning("Returns router DISABLED: %s", e)
+    import logging
+    logging.getLogger("uvicorn.error").warning("Returns router DISABLED: %s", e)
 
+# Profections
 try:
     from app.api.routers import profections  # type: ignore
     app.include_router(profections.router, prefix="/profections", tags=["profections"])
 except Exception as e:
-    import logging; logging.getLogger("uvicorn.error").warning("Profections router DISABLED: %s", e)
+    import logging
+    logging.getLogger("uvicorn.error").warning("Profections router DISABLED: %s", e)
 
+# Retrogrades
 try:
     from app.api.routers import retrogrades  # type: ignore
     app.include_router(retrogrades.router, prefix="/retrogrades", tags=["retrogrades"])
 except Exception as e:
-    import logging; logging.getLogger("uvicorn.error").warning("Retrogrades router DISABLED: %s", e)
+    import logging
+    logging.getLogger("uvicorn.error").warning("Retrogrades router DISABLED: %s", e)
 
+# Progressions
 try:
     from app.api.routers import progressions  # type: ignore
     app.include_router(progressions.router, prefix="/progressions", tags=["progressions"])
 except Exception as e:
-    import logging; logging.getLogger("uvicorn.error").warning("Progressions router DISABLED: %s", e)
+    import logging
+    logging.getLogger("uvicorn.error").warning("Progressions router DISABLED: %s", e)
 
+# Transits
 try:
     from app.api.routers import transits  # type: ignore
     app.include_router(transits.router, prefix="/transits", tags=["transits"])
 except Exception as e:
-    import logging; logging.getLogger("uvicorn.error").warning("Transits router DISABLED: %s", e)
+    import logging
+    logging.getLogger("uvicorn.error").warning("Transits router DISABLED: %s", e)
 
+# Natal
 try:
     from app.api.routers import natal  # type: ignore
     app.include_router(natal.router, prefix="/natal", tags=["natal"])
 except Exception as e:
-    import logging; logging.getLogger("uvicorn.error").warning("Natal router DISABLED: %s", e)
+    import logging
+    logging.getLogger("uvicorn.error").warning("Natal router DISABLED: %s", e)
 
-# Diğer router örneği: electional
+# Electional
 try:
     from app.api.routers import electional  # type: ignore
-    # Not: electional.router içinde prefix TANIMLI DEĞİL.
-    # Burada prefix'i veriyoruz; tam path: /electional/<route>
+    # electional.router içinde prefix tanımlı değil; burada veriyoruz
     app.include_router(electional.router, prefix="/electional", tags=["electional"])
 except Exception as e:
-    # Router yoksa servis yine ayağa kalksın; sağlık ucu yeter.
     import logging
     logging.getLogger("uvicorn.error").warning("Electional router DISABLED: %s", e)
