@@ -33,9 +33,9 @@ class SearchRequest(BaseModel):
 
     avoid_mercury_rx: bool = True
     avoid_moon_voc: bool = True
-
-@router.post("/search")
-def search(req: SearchRequest) -> Dict[str, Any]:
+    
+router.post("/search", dependencies=[Depends(plan_limiter("FREE"))])
+async def search(req: SearchRequest) -> Dict[str, Any]:   
     """
     /electional/search
     - Başlangıç zamanı UTC normalize edilir (minute==60 / hour==24 vb. hatalara düşmez)
