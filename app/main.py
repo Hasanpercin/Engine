@@ -76,6 +76,13 @@ try:
     from app.api.routers import composite  # type: ignore
     app.include_router(composite.router, prefix="/", tags=["composite"])
 except Exception as e:
+    import logging
+    logging.getLogger("uvicorn.error").warning("Composite router DISABLED: %s", e)
+
+try:
+    from app.api.routers import composite  # type: ignore
+    app.include_router(composite.router, prefix="/", tags=["composite"])
+except Exception as e:
     import logging; logging.getLogger("uvicorn.error").warning("Composite router DISABLED: %s", e)
 
 try:
