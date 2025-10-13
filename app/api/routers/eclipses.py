@@ -9,13 +9,13 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from app.utils.rate_limit import plan_limiter
 
-# Swiss Ephemeris (bazı ortamlarda pyswisseph adıyla gelir)
+# Swiss Ephemeris: bazı ortamlarda pyswisseph adıyla gelir
 try:
-    import swisseph as swe
+    import swisseph as swe  # type: ignore
 except Exception:  # pragma: no cover
     import pyswisseph as swe  # type: ignore
 
-# Ephemeris yolu
+# Ephemeris path
 swe.set_ephe_path(os.getenv("SE_EPHE_PATH", "/app/ephe"))
 
 router = APIRouter(tags=["eclipses"])
@@ -30,22 +30,24 @@ def _jd_to_iso(jd: float) -> str:
     y, m, d, h = swe.revjul(jd, swe.GREG_CAL)
     hh = int(h)
     mm = int(round((h - hh) * 60))
+    # normalize saat/dakika
     base = datetime(y, m, d, 0, 0, tzinfo=timezone.utc)
     return (base + timedelta(hours=hh, minutes=mm)).isoformat()
 
-# Sabitler: bazı build'larda eksik ise güvenli varsayılanlar
-ECL_TOTAL          = getattr(swe, "SE_ECL_TOTAL",           1)
-ECL_ANNULAR        = getattr(swe, "SE_ECL_ANNULAR",         2)
-ECL_PARTIAL        = getattr(swe, "SE_ECL_PARTIAL",         4)
-ECL_ANNULAR_TOTAL  = getattr(swe, "SE_ECL_ANNULAR_TOTAL",   8)  # hybrid
-ECL_PENUMBRAL      = getattr(swe, "SE_ECL_PENUMBRAL",       16)
+# Bazı build’larda sabitler eksik olabiliyor → güvenli fallback
+ECL_TOTAL         = getattr(swe, "SE_ECL_TOTAL",         1)
+ECL_ANNULAR       = getattr(swe, "SE_ECL_ANNULAR",       2)
+ECL_PARTIAL       = getattr(swe, "SE_ECL_PARTIAL",       4)
+ECL_ANNULAR_TOTAL = getattr(swe, "SE_ECL_ANNULAR_TOTAL", 8)   # hybrid
+ECL_PENUMBRAL     = getattr(swe, "SE_ECL_PENUMBRAL",     16)
 
 def _sol_type_name(retflag: int) -> str:
+    # Bazı build’larda birden çok bit set olabiliyor; 2025 olaylarıyla uyum için partial'ı öncele
     try:
+        if retflag & ECL_PARTIAL:       return "partial"
         if retflag & ECL_TOTAL:         return "total"
         if retflag & ECL_ANNULAR_TOTAL: return "hybrid"
         if retflag & ECL_ANNULAR:       return "annular"
-        if retflag & ECL_PARTIAL:       return "partial"
     except Exception:
         pass
     return "unknown"
@@ -65,6 +67,7 @@ def _normalize_ecl_result(out: Any) -> Tuple[int, List[float]]:
     - (retflag, tret, attr, serr)
     - (tret, retflag)
     - (retflag, tret)
+    Bazı edge durumlarda liste/tuple yalnızca 'tret' olabilir.
     """
     if isinstance(out, tuple):
         if len(out) == 4:
@@ -75,26 +78,37 @@ def _normalize_ecl_result(out: Any) -> Tuple[int, List[float]]:
             if isinstance(a, (list, tuple)):
                 return int(b), list(a)
             return int(a), list(b)
-    # Bazı edge durumlarda doğrudan list/tuple gelebilir
     if isinstance(out, (list, tuple)) and len(out) >= 1:
-        # bu durumda retflag yoksa 0 varsay
+        # retflag yoksa 0 kabul et
         return 0, list(out)
-    raise TypeError(f"Unexpected eclipse result shape: {type(out)} len={len(out) if hasattr(out,'__len__') else 'n/a'}")
+    raise TypeError(
+        f"Unexpected eclipse result shape: {type(out)} "
+        f"len={len(out) if hasattr(out,'__len__') else 'n/a'}"
+    )
 
 def _call_sol_glob(jd: float, ifl: int) -> Tuple[int, List[float]]:
+    # Farklı imza varyantlarını sırayla dene
     for args in ((jd, ifl, 0), (jd, ifl), (jd,)):
         try:
             out = swe.sol_eclipse_when_glob(*args)  # type: ignore[misc]
             return _normalize_ecl_result(out)
         except Exception:
             continue
-    # buraya gelmemeli
+    # Olmadıysa boş dön
     return 0, []
 
 def _call_lun_glob(jd: float, ifl: int) -> Tuple[int, List[float]]:
+    # Önce glob
     for args in ((jd, ifl, 0), (jd, ifl), (jd,)):
         try:
             out = swe.lun_eclipse_when_glob(*args)  # type: ignore[misc]
+            return _normalize_ecl_result(out)
+        except Exception:
+            continue
+    # Fallback: non-glob (birçok sürümde daha stabil)
+    for args in ((jd, ifl, 0), (jd, ifl), (jd,)):
+        try:
+            out = swe.lun_eclipse_when(*args)  # type: ignore[misc]
             return _normalize_ecl_result(out)
         except Exception:
             continue
@@ -102,14 +116,18 @@ def _call_lun_glob(jd: float, ifl: int) -> Tuple[int, List[float]]:
 
 # ---------- Models ----------
 class RangeRequest(BaseModel):
-    start_year: int; start_month: int; start_day: int
-    end_year: int; end_month: int; end_day: int
+    start_year: int
+    start_month: int
+    start_day: int
+    end_year: int
+    end_month: int
+    end_day: int
     max_events: int = Field(20, ge=1, le=200)
 
 class EclipseItem(BaseModel):
     kind: str              # "solar" | "lunar"
     type: str              # "total" | "annular" | "hybrid" | "partial" | "penumbral" | "unknown"
-    max_ts: str            # ISO8601 UTC
+    max_ts: str            # ISO 8601 UTC
     jd_max: float
 
 class RangeResponse(BaseModel):
@@ -117,7 +135,11 @@ class RangeResponse(BaseModel):
     items: List[EclipseItem]
 
 # ---------- Endpoints ----------
-@router.post("/solar/range", response_model=RangeResponse, dependencies=[Depends(plan_limiter("PRO"))])
+@router.post(
+    "/solar/range",
+    response_model=RangeResponse,
+    dependencies=[Depends(plan_limiter("PRO"))],
+)
 async def solar_range(req: RangeRequest) -> Dict[str, Any]:
     try:
         jd = _to_jd(datetime(req.start_year, req.start_month, req.start_day, tzinfo=timezone.utc))
@@ -130,11 +152,13 @@ async def solar_range(req: RangeRequest) -> Dict[str, Any]:
             if not tret:
                 break
             jd_max = float(tret[0])
-            if jd_max <= jd:          # güvenli ilerleme (sıkı döngü engeli)
-                jd += 30.0
-                continue
             if jd_max > jd_end:
                 break
+            if jd_max <= jd:
+                # olası yerinde sayma için güvenli sıçrama
+                jd = jd + 25.0
+                continue
+
             items.append({
                 "kind": "solar",
                 "type": _sol_type_name(int(retflag)),
@@ -143,13 +167,18 @@ async def solar_range(req: RangeRequest) -> Dict[str, Any]:
             })
             if len(items) >= req.max_events:
                 break
-            jd = jd_max + 1.0         # bir sonraki tutulmaya atla
+            # sonraki olaya atla (yerinde saymayı önlemek için max ile)
+            jd = max(jd_max + 1.0, jd + 25.0)
+
         return {"count": len(items), "items": items}
     except Exception as e:
-        # tür belirlemede sabit eksikliği gibi durumlar artık 200 döner; burası sadece beklenmedik hatalar için
         raise HTTPException(status_code=400, detail=f"Solar eclipse search failed: {e}")
 
-@router.post("/lunar/range", response_model=RangeResponse, dependencies=[Depends(plan_limiter("PRO"))])
+@router.post(
+    "/lunar/range",
+    response_model=RangeResponse,
+    dependencies=[Depends(plan_limiter("PRO"))],
+)
 async def lunar_range(req: RangeRequest) -> Dict[str, Any]:
     try:
         jd = _to_jd(datetime(req.start_year, req.start_month, req.start_day, tzinfo=timezone.utc))
@@ -162,11 +191,12 @@ async def lunar_range(req: RangeRequest) -> Dict[str, Any]:
             if not tret:
                 break
             jd_max = float(tret[0])
-            if jd_max <= jd:
-                jd += 30.0
-                continue
             if jd_max > jd_end:
                 break
+            if jd_max <= jd:
+                jd = jd + 25.0
+                continue
+
             items.append({
                 "kind": "lunar",
                 "type": _lun_type_name(int(retflag)),
@@ -175,7 +205,8 @@ async def lunar_range(req: RangeRequest) -> Dict[str, Any]:
             })
             if len(items) >= req.max_events:
                 break
-            jd = jd_max + 1.0
+            jd = max(jd_max + 1.0, jd + 25.0)
+
         return {"count": len(items), "items": items}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Lunar eclipse search failed: {e}")
