@@ -61,6 +61,30 @@ except Exception as e:
     logging.getLogger("uvicorn.error").warning("Lunar router DISABLED: %s", e)
 
 try:
+    from app.api.routers import returns  # type: ignore
+    app.include_router(returns.router, prefix="/returns", tags=["returns"])
+except Exception as e:
+    import logging; logging.getLogger("uvicorn.error").warning("Returns router DISABLED: %s", e)
+
+try:
+    from app.api.routers import profections  # type: ignore
+    app.include_router(profections.router, prefix="/profections", tags=["profections"])
+except Exception as e:
+    import logging; logging.getLogger("uvicorn.error").warning("Profections router DISABLED: %s", e)
+
+try:
+    from app.api.routers import retrogrades  # type: ignore
+    app.include_router(retrogrades.router, prefix="/retrogrades", tags=["retrogrades"])
+except Exception as e:
+    import logging; logging.getLogger("uvicorn.error").warning("Retrogrades router DISABLED: %s", e)
+
+try:
+    from app.api.routers import progressions  # type: ignore
+    app.include_router(progressions.router, prefix="/progressions", tags=["progressions"])
+except Exception as e:
+    import logging; logging.getLogger("uvicorn.error").warning("Progressions router DISABLED: %s", e)
+
+try:
     from app.api.routers import transits  # type: ignore
     app.include_router(transits.router, prefix="/transits", tags=["transits"])
 except Exception as e:
