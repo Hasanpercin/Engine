@@ -1,22 +1,24 @@
 # app/calculators/electional.py
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Dict, List, Tuple
 from datetime import datetime, timedelta, timezone
 import math
 import os
 
-# Swiss Ephemeris import (pyswisseph alias'ı olan ortamlara uyumlu)
+# Swiss Ephemeris: bazı ortamlarda "pyswisseph" adıyla gelir
 try:
-    import swisseph as swe  # pyswisseph package
+    import swisseph as swe
 except Exception:
-    import pyswisseph as swe  # some envs expose as pyswisseph
+    import pyswisseph as swe  # type: ignore
 
-# --- Ephemeris path (prod'da mutlaka set edilsin) ---
+# Ephemeris yolu (ENV > /app/ephe)
 swe.set_ephe_path(os.getenv("SE_EPHE_PATH", "/app/ephe"))
 
-# --- Constants ---
+# --------------------------------------------------------------------
+# Sabitler
+# --------------------------------------------------------------------
 MAJOR_ASPECTS = {
     "conjunction": 0,
     "sextile": 60,
@@ -40,11 +42,12 @@ PLANETS = {
     "uranus": swe.URANUS, "neptune": swe.NEPTUNE, "pluto": swe.PLUTO
 }
 
-# Bayraklar: Ekliptik koordinatlar + hız
-_SWE_FLAGS = swe.FLG_SWIEPH | swe.FLG_SPEED  # Ecliptic (default) + speed
+# Ekliptik + hız bayrakları (hız için FLG_SPEED şart)
+_SWE_FLAGS = swe.FLG_SWIEPH | swe.FLG_SPEED
 
-
-# --- Utilities ---
+# --------------------------------------------------------------------
+# Yardımcılar
+# --------------------------------------------------------------------
 def _norm360(angle: float) -> float:
     return angle % 360.0
 
@@ -54,8 +57,8 @@ def _angle_diff(a: float, b: float) -> float:
 
 def _planet_lon_speed(jd_utc: float, planet: int) -> Tuple[float, float]:
     """
-    Swiss Ephemeris'ten geosantrik ekliptik boylam (deg) ve boylam hızı (deg/gün) döndürür.
-    DİKKAT: calc_ut dönüşü (xx, retflag) şeklindedir; hız xx[3]'tedir.
+    Swiss Ephemeris'ten geosantrik ekliptik boylam (deg) ve boylam hızı (deg/gün).
+    DÖNÜŞ: (xx, retflag); lon = xx[0], speed = xx[3]
     """
     xx, retflag = swe.calc_ut(jd_utc, planet, _SWE_FLAGS)
     lon = xx[0] % 360.0
@@ -70,14 +73,15 @@ def _is_mercury_rx(jd_utc: float) -> bool:
     _, spd = _planet_lon_speed(jd_utc, swe.MERCURY)
     return spd < 0
 
-
-# --- Core calculations ---
+# --------------------------------------------------------------------
+# Çekirdek hesaplar
+# --------------------------------------------------------------------
 def lunar_phase(jd_utc: float) -> Dict[str, object]:
     lon_sun, _ = _planet_lon_speed(jd_utc, swe.SUN)
     lon_moon, _ = _planet_lon_speed(jd_utc, swe.MOON)
     elong = _norm360(lon_moon - lon_sun)
     waxing = elong < 180
-    # sınıflandırma (±10° tolerans)
+    # ±10° toleransla faz sınıflama
     if _angle_diff(elong, 0) <= 10:
         name = "New Moon"
     elif _angle_diff(elong, 90) <= 10 and waxing:
@@ -98,7 +102,7 @@ def essential_dignities(sign_index: int, planet_name: str) -> Dict[str, bool]:
     }
     exaltation = {
         "sun": [0], "moon": [1], "mercury": [6], "venus": [11],
-        "mars": [3], "jupiter": [4], "saturn": [6]  # Saturn exalt in Libra (sign 6)
+        "mars": [3], "jupiter": [4], "saturn": [6]  # Satürn Terazi'de yücelir
     }
     di = domicile.get(planet_name, [])
     ex = exaltation.get(planet_name, [])
@@ -113,12 +117,12 @@ def essential_dignities(sign_index: int, planet_name: str) -> Dict[str, bool]:
 
 def aspects_matrix(jd_utc: float, orb_table: Dict[str, int] | None = None) -> Dict[Tuple[str, str], Dict]:
     """
-    Ana gezegenler arası majör açılar (orb toleranslarıyla) ve 'applying' bilgisi.
-    Dönen sözlük: {(a,b): {"aspect": name, "delta": deg, "applying": bool}}
+    Majör açılar ve "applying" bilgisi.
+    Dönüş: {(a,b): {"aspect": name, "delta": deg, "applying": bool}}
     """
     if orb_table is None:
         orb_table = DEFAULT_ORBS
-    # longitudes & speeds
+
     pos: Dict[str, Tuple[float, float]] = {}
     for name, pid in PLANETS.items():
         lon, spd = _planet_lon_speed(jd_utc, pid)
@@ -139,34 +143,29 @@ def aspects_matrix(jd_utc: float, orb_table: Dict[str, int] | None = None) -> Di
                     found = asp_name
                     break
             if found:
-                # Basit applying tanımı: relatif hız ve fark yönü
+                # basit applying tanımı: relatif hız ve fark yönü
                 applying = (spd_a - spd_b) * ((lon_b - lon_a + 360) % 360) > 0
-                results[(a, b)] = {
-                    "aspect": found, "delta": delta, "applying": applying
-                }
+                results[(a, b)] = {"aspect": found, "delta": delta, "applying": applying}
     return results
 
 def moon_void_of_course(jd_start_utc: float, step_minutes: int = 15) -> Tuple[bool, float, float]:
     """
-    Return (is_voc_now, jd_voc_start, jd_sign_change)
     Strict VoC: Mevcut burçta Ay'ın yaptığı SON majör açıdan, bir SONRAKİ burç girişine kadar.
+    Dönüş: (is_voc_now, jd_voc_start, jd_sign_change)
     """
     step_minutes = int(step_minutes)
     if step_minutes <= 0:
         raise ValueError("step_minutes must be > 0")
 
-    # mevcut burç
     start_sign = _moon_sign(jd_start_utc)
     jd = jd_start_utc
     last_aspect_jd = None
 
-    # burç değişimine dek tarama; son majör açı zamanını takip et
-    # (sonsuz döngüye girmemek için kaba bir güvenlik sınırı)
-    max_iters = int((29.5 * 24 * 60) // step_minutes) + 5  # bir sinodik ayı aşmasın
+    # Güvenlik: uzun taramalarda sonsuz döngü engeli (yaklaşık bir sinodik ay)
+    max_iters = int((29.5 * 24 * 60) // step_minutes) + 5
     it = 0
     while _moon_sign(jd) == start_sign and it < max_iters:
         asps = aspects_matrix(jd)
-        # Ay'ın yaptığı majör açılar?
         moon_pairs = [k for k in asps.keys() if "moon" in k]
         if moon_pairs:
             last_aspect_jd = jd
@@ -174,12 +173,7 @@ def moon_void_of_course(jd_start_utc: float, step_minutes: int = 15) -> Tuple[bo
         it += 1
 
     jd_sign_change = jd
-    if last_aspect_jd is None:
-        # Bu burçta hiç açı yoksa -> VoC burca girişten itibaren kabul; approx: start
-        jd_voc_start = jd_start_utc
-    else:
-        jd_voc_start = last_aspect_jd
-
+    jd_voc_start = jd_start_utc if last_aspect_jd is None else last_aspect_jd
     is_voc_now = (jd_start_utc >= jd_voc_start) and (jd_start_utc < jd_sign_change)
     return is_voc_now, jd_voc_start, jd_sign_change
 
@@ -196,13 +190,19 @@ class ElectionalScore:
     score: float
     reasons: List[str]
 
-def search_electional_windows(jd_start: float, jd_end: float, lat: float, lon: float,
-                              step_minutes: int = 15,
-                              avoid_merc_rx: bool = True, avoid_moon_voc: bool = True) -> List[ElectionalScore]:
+def search_electional_windows(
+    jd_start: float,
+    jd_end: float,
+    lat: float,
+    lon: float,
+    step_minutes: int = 15,
+    avoid_merc_rx: bool = True,
+    avoid_moon_voc: bool = True,
+) -> List[ElectionalScore]:
     """
-    JD aralığında (jd_start..jd_end) belirli adım ile tarama yapar ve
-    puanlanmış zaman noktalarını döndürür (en iyi 50).
-    Not: parametrelerdeki lat/lon şimdilik kullanılmıyor; imzada tutuldu.
+    [jd_start .. jd_end] aralığını "inclusive" biçimde tarar; her örnek nokta için
+    faz/asalet/açı/retro/VoC kriterlerine göre skor üretir ve en iyi 50 sonucu döndürür.
+    Not: lat/lon şu an kullanılmıyor; imzada tutuldu.
     """
     step_minutes = int(step_minutes)
     if step_minutes <= 0:
@@ -210,20 +210,24 @@ def search_electional_windows(jd_start: float, jd_end: float, lat: float, lon: f
     if jd_end < jd_start:
         raise ValueError("jd_end must be >= jd_start")
 
-    jd = jd_start
-    out: List[ElectionalScore] = []
+    # Inclusive adımlama: başlangıç + her adım + (mümkünse) bitiş noktasını kapsar
+    total_min = int(round((jd_end - jd_start) * 24 * 60))
+    steps = total_min // step_minutes  # 2h/30m -> 120//30 = 4 → range(5) ile 5 nokta
 
-    while jd <= jd_end:
+    out: List[ElectionalScore] = []
+    for i in range(steps + 1):
+        jd = jd_start + (i * step_minutes) / (24 * 60)
+
         reasons: List[str] = []
         score = 0.0
 
-        # Moon phase basic scoring
+        # Faz
         phase = lunar_phase(jd)
         if phase["phase"] in {"New Moon", "First Quarter", "Full Moon", "Last Quarter"}:
             score += 1.0
             reasons.append(f"phase={phase['phase']}")
 
-        # Essential dignities (Moon & Venus örneği)
+        # Dignities: Moon & Venus örneği
         moon_lon, _ = _planet_lon_speed(jd, swe.MOON)
         venus_lon, _ = _planet_lon_speed(jd, swe.VENUS)
         moon_sign = int(moon_lon // 30)
@@ -235,7 +239,7 @@ def search_electional_windows(jd_start: float, jd_end: float, lat: float, lon: f
         if ven_dig["domicile"] or ven_dig["exaltation"]:
             score += 1.0; reasons.append("venus_dignified")
 
-        # Aspects: basit iyi açı sayımı (trine/sextile & venus/jupiter içeren çiftler)
+        # Açı matrisi: trine/sextile ve içinde venus/jupiter olan çiftler
         asps = aspects_matrix(jd)
         good = 0
         for (a, b), data in asps.items():
@@ -254,8 +258,6 @@ def search_electional_windows(jd_start: float, jd_end: float, lat: float, lon: f
                 score -= 3.0; reasons.append("moon_voc")
 
         out.append(ElectionalScore(jd, score, reasons))
-        jd += step_minutes / (24 * 60)
 
-    # En iyi 50 sonucu döndür
     out_sorted = sorted(out, key=lambda x: -x.score)
     return out_sorted[:50]
