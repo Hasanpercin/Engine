@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from fastapi import Depends
+from app.utils.rate_limit import plan_limiter
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
