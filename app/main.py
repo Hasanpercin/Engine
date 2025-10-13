@@ -60,6 +60,18 @@ except Exception as e:
     import logging
     logging.getLogger("uvicorn.error").warning("Lunar router DISABLED: %s", e)
 
+try:
+    from app.api.routers import transits  # type: ignore
+    app.include_router(transits.router, prefix="/transits", tags=["transits"])
+except Exception as e:
+    import logging; logging.getLogger("uvicorn.error").warning("Transits router DISABLED: %s", e)
+
+try:
+    from app.api.routers import natal  # type: ignore
+    app.include_router(natal.router, prefix="/natal", tags=["natal"])
+except Exception as e:
+    import logging; logging.getLogger("uvicorn.error").warning("Natal router DISABLED: %s", e)
+
 # Diğer router örneği: electional
 try:
     from app.api.routers import electional  # type: ignore
