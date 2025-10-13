@@ -9,98 +9,58 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from app.utils.rate_limit import plan_limiter
 
-# Swiss Ephemeris: bazı ortamlarda pyswisseph adıyla gelir
+# Swiss Ephemeris
 try:
     import swisseph as swe  # type: ignore
 except Exception:  # pragma: no cover
     import pyswisseph as swe  # type: ignore
 
-# Ephemeris path
 swe.set_ephe_path(os.getenv("SE_EPHE_PATH", "/app/ephe"))
-
-# Tür eşleştirme modu:
-# - simple: "partial" öncelikli (pratik katalog uyumu için)
-# - strict: "total" > "hybrid" > "annular" > "partial" (kitabi sıra)
-ECL_CLASS_MODE = os.getenv("ECL_CLASS_MODE", "simple").strip().lower()
-
 router = APIRouter(tags=["eclipses"])
 
-# ---------- Helpers ----------
+# ---------- helpers ----------
 def _to_jd(dt_utc: datetime) -> float:
     dt_utc = dt_utc.astimezone(timezone.utc)
-    hourf = dt_utc.hour + dt_utc.minute / 60 + dt_utc.second / 3600
+    hourf = dt_utc.hour + dt_utc.minute/60 + dt_utc.second/3600
     return swe.julday(dt_utc.year, dt_utc.month, dt_utc.day, hourf, swe.GREG_CAL)
 
 def _jd_to_iso(jd: float) -> str:
     y, m, d, h = swe.revjul(jd, swe.GREG_CAL)
-    hh = int(h)
-    mm = int(round((h - hh) * 60))
-    # normalize saat/dakika
     base = datetime(y, m, d, 0, 0, tzinfo=timezone.utc)
+    hh = int(h); mm = int(round((h - hh) * 60))
     return (base + timedelta(hours=hh, minutes=mm)).isoformat()
 
-# Bazı build’larda sabitler eksik olabiliyor → güvenli fallback
-ECL_TOTAL         = getattr(swe, "SE_ECL_TOTAL",         1)
-ECL_ANNULAR       = getattr(swe, "SE_ECL_ANNULAR",       2)
-ECL_PARTIAL       = getattr(swe, "SE_ECL_PARTIAL",       4)
-ECL_ANNULAR_TOTAL = getattr(swe, "SE_ECL_ANNULAR_TOTAL", 8)   # hybrid
-ECL_PENUMBRAL     = getattr(swe, "SE_ECL_PENUMBRAL",     16)
-
-# Sıralama profilleri
-_SOLAR_ORDER_SIMPLE  = [("partial", ECL_PARTIAL), ("total", ECL_TOTAL),
-                        ("hybrid", ECL_ANNULAR_TOTAL), ("annular", ECL_ANNULAR)]
-_SOLAR_ORDER_STRICT  = [("total", ECL_TOTAL), ("hybrid", ECL_ANNULAR_TOTAL),
-                        ("annular", ECL_ANNULAR), ("partial", ECL_PARTIAL)]
-
-_LUNAR_ORDER_SIMPLE  = [("partial", ECL_PARTIAL), ("total", ECL_TOTAL), ("penumbral", ECL_PENUMBRAL)]
-_LUNAR_ORDER_STRICT  = [("total", ECL_TOTAL), ("partial", ECL_PARTIAL), ("penumbral", ECL_PENUMBRAL)]
-
-def _pick_type(retflag: int, order: List[Tuple[str, int]]) -> str:
-    try:
-        for name, mask in order:
-            if retflag & mask:
-                return name
-    except Exception:
-        pass
-    return "unknown"
-
-def _sol_type_name(retflag: int) -> str:
-    order = _SOLAR_ORDER_STRICT if ECL_CLASS_MODE == "strict" else _SOLAR_ORDER_SIMPLE
-    return _pick_type(retflag, order)
-
-def _lun_type_name(retflag: int) -> str:
-    order = _LUNAR_ORDER_STRICT if ECL_CLASS_MODE == "strict" else _LUNAR_ORDER_SIMPLE
-    return _pick_type(retflag, order)
+# Bayraklar (sabitler bazı build’larda eksik olabiliyor diye getattr ile güvenli al)
+ECL_TOTAL          = getattr(swe, "SE_ECL_TOTAL",          1)
+ECL_ANNULAR        = getattr(swe, "SE_ECL_ANNULAR",        2)
+ECL_PARTIAL        = getattr(swe, "SE_ECL_PARTIAL",        4)
+ECL_ANNULAR_TOTAL  = getattr(swe, "SE_ECL_ANNULAR_TOTAL",  8)   # solar hybrid
+ECL_NONCENTRAL     = getattr(swe, "SE_ECL_NONCENTRAL",     16)  # solar
+ECL_PENUMBRAL      = getattr(swe, "SE_ECL_PENUMBRAL",      4)   # lunar penumbral (aynı değer: 4)
 
 def _normalize_ecl_result(out: Any) -> Tuple[int, List[float], Optional[List[float]]]:
     """
-    pyswisseph uyumluluğu:
+    Dönüş imzalarını normalize et:
     - (retflag, tret, attr, serr)
     - (tret, retflag)
     - (retflag, tret)
-    Edge: yalnız tret listesi/tuple'ı dönebilir (retflag yok) → retflag=0
-    Döndürür: (retflag, tret_list, attr_list | None)
+    - yalnız tret
+    Döndür: (retflag, list(tret), list(attr)|None)
     """
     if isinstance(out, tuple):
         if len(out) == 4:
-            retflag, tret, attr, _serr = out
+            retflag, tret, attr, _ = out
             return int(retflag), list(tret), list(attr)
         if len(out) == 2:
             a, b = out
             if isinstance(a, (list, tuple)):
-                # (tret, retflag)
                 return int(b), list(a), None
-            # (retflag, tret)
             return int(a), list(b), None
     if isinstance(out, (list, tuple)) and len(out) >= 1:
         return 0, list(out), None
-    raise TypeError(
-        f"Unexpected eclipse result shape: {type(out)} "
-        f"len={len(out) if hasattr(out,'__len__') else 'n/a'}"
-    )
+    raise TypeError(f"Unexpected eclipse result shape: {type(out)}")
 
 def _call_sol_glob(jd: float, ifl: int) -> Tuple[int, List[float], Optional[List[float]], str]:
-    # Farklı imza varyantlarını sırayla dene
     for args in ((jd, ifl, 0), (jd, ifl), (jd,)):
         try:
             out = swe.sol_eclipse_when_glob(*args)  # type: ignore[misc]
@@ -108,11 +68,10 @@ def _call_sol_glob(jd: float, ifl: int) -> Tuple[int, List[float], Optional[List
             return ret, tret, attr, "sol_glob"
         except Exception:
             continue
-    # Olmadıysa boş dön
     return 0, [], None, "sol_glob"
 
-def _call_lun_any(jd: float, ifl: int) -> Tuple[int, List[float], Optional[List[float]], str]:
-    # 1) glob
+def _call_lun_glob_or_when(jd: float, ifl: int) -> Tuple[int, List[float], Optional[List[float]], str]:
+    # Önce global
     for args in ((jd, ifl, 0), (jd, ifl), (jd,)):
         try:
             out = swe.lun_eclipse_when_glob(*args)  # type: ignore[misc]
@@ -120,7 +79,7 @@ def _call_lun_any(jd: float, ifl: int) -> Tuple[int, List[float], Optional[List[
             return ret, tret, attr, "lun_glob"
         except Exception:
             continue
-    # 2) fallback: non-glob
+    # Sonra yerel (0,0) varsayımlı)
     for args in ((jd, ifl, 0), (jd, ifl), (jd,)):
         try:
             out = swe.lun_eclipse_when(*args)  # type: ignore[misc]
@@ -130,7 +89,62 @@ def _call_lun_any(jd: float, ifl: int) -> Tuple[int, List[float], Optional[List[
             continue
     return 0, [], None, "lun_none"
 
-# ---------- Models ----------
+def _sol_how_at(jd: float, ifl: int) -> Tuple[Optional[int], Optional[List[float]]]:
+    # Çeşitli imzaları dene (geomerkez: lon=0, lat=0, alt=0; basınç/sıcaklık 0)
+    for args in (
+        (jd, ifl, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (jd, ifl, (0.0, 0.0, 0.0), 0.0, 0.0),
+    ):
+        try:
+            out = swe.sol_eclipse_how(*args)  # type: ignore[misc]
+            if isinstance(out, tuple) and len(out) >= 2:
+                retflag, attr = out[0], out[1]
+                return int(retflag), list(attr) if isinstance(attr, (list, tuple)) else None
+        except Exception:
+            continue
+    return None, None
+
+def _lun_how_at(jd: float, ifl: int) -> Tuple[Optional[int], Optional[List[float]]]:
+    for args in (
+        (jd, ifl, 0.0, 0.0, 0.0),
+        (jd, ifl, (0.0, 0.0), 0.0, 0.0),
+    ):
+        try:
+            out = swe.lun_eclipse_how(*args)  # type: ignore[misc]
+            if isinstance(out, tuple) and len(out) >= 2:
+                retflag, attr = out[0], out[1]
+                return int(retflag), list(attr) if isinstance(attr, (list, tuple)) else None
+        except Exception:
+            continue
+    return None, None
+
+def _classify_solar(retflag: int) -> str:
+    # NONCENTRAL set ise, kataloglarda “partial” kabul edilir.
+    if retflag & ECL_NONCENTRAL:
+        return "partial"
+    if retflag & ECL_TOTAL:
+        return "total"
+    if retflag & ECL_ANNULAR_TOTAL:
+        return "hybrid"
+    if retflag & ECL_ANNULAR:
+        return "annular"
+    if retflag & ECL_PARTIAL:
+        return "partial"
+    return "unknown"
+
+def _classify_lunar(retflag: int) -> str:
+    # Lunar: total > partial > penumbral
+    if retflag & ECL_TOTAL:
+        return "total"
+    # Lunar partial bayrağı bazı build’larda 2’dir; ECL_PARTIAL (4) solar içindir.
+    # Ancak pyswisseph SE_ECL_PARTIAL sabiti globaldir; retflag değerine göre karar veriyoruz.
+    if retflag & 2:  # güvenli: lunar partial
+        return "partial"
+    if retflag & ECL_PENUMBRAL:  # 4
+        return "penumbral"
+    return "unknown"
+
+# ---------- models ----------
 class RangeRequest(BaseModel):
     start_year: int
     start_month: int
@@ -142,11 +156,10 @@ class RangeRequest(BaseModel):
     debug: bool = False
 
 class EclipseItem(BaseModel):
-    kind: str              # "solar" | "lunar"
-    type: str              # "total" | "annular" | "hybrid" | "partial" | "penumbral" | "unknown"
-    max_ts: str            # ISO 8601 UTC
+    kind: str
+    type: str
+    max_ts: str
     jd_max: float
-    # debug opsiyonel alanlar:
     retflag: Optional[int] = None
     api: Optional[str] = None
     attrs: Optional[List[float]] = None
@@ -155,7 +168,7 @@ class RangeResponse(BaseModel):
     count: int
     items: List[EclipseItem]
 
-# ---------- Endpoints ----------
+# ---------- endpoints ----------
 @router.post(
     "/solar/range",
     response_model=RangeResponse,
@@ -177,23 +190,24 @@ async def solar_range(req: RangeRequest) -> Dict[str, Any]:
             if jd_max > jd_end:
                 break
             if jd_max <= jd:
-                # olası yerinde sayma için güvenli sıçrama
                 jd = jd + 25.0
                 continue
 
+            # jd_max’te sınıflamayı teyit et
+            ret2, attr2 = _sol_how_at(jd_max, ifl)
+            use_ret = int(ret2) if ret2 is not None else int(retflag)
             item: Dict[str, Any] = {
                 "kind": "solar",
-                "type": _sol_type_name(int(retflag)),
+                "type": _classify_solar(use_ret),
                 "max_ts": _jd_to_iso(jd_max),
                 "jd_max": jd_max,
             }
             if req.debug:
-                item.update({"retflag": int(retflag), "api": api, "attrs": attr})
+                item.update({"retflag": use_ret, "api": api, "attrs": attr2 if attr2 is not None else attr})
             items.append(item)
 
             if len(items) >= req.max_events:
                 break
-            # sonraki olaya atla (yerinde saymayı önlemek için max ile)
             jd = max(jd_max + 1.0, jd + 25.0)
 
         return {"count": len(items), "items": items}
@@ -214,7 +228,7 @@ async def lunar_range(req: RangeRequest) -> Dict[str, Any]:
         ifl = getattr(swe, "FLG_SWIEPH", 2)
 
         while True:
-            retflag, tret, attr, api = _call_lun_any(jd, ifl)
+            retflag, tret, attr, api = _call_lun_glob_or_when(jd, ifl)
             if not tret:
                 break
             jd_max = float(tret[0])
@@ -224,14 +238,17 @@ async def lunar_range(req: RangeRequest) -> Dict[str, Any]:
                 jd = jd + 25.0
                 continue
 
+            # jd_max’te global “how” ile yeniden bayrak al (lunar’da özellikle kritik)
+            ret2, attr2 = _lun_how_at(jd_max, ifl)
+            use_ret = int(ret2) if ret2 is not None else int(retflag)
             item: Dict[str, Any] = {
                 "kind": "lunar",
-                "type": _lun_type_name(int(retflag)),
+                "type": _classify_lunar(use_ret),
                 "max_ts": _jd_to_iso(jd_max),
                 "jd_max": jd_max,
             }
             if req.debug:
-                item.update({"retflag": int(retflag), "api": api, "attrs": attr})
+                item.update({"retflag": use_ret, "api": api, "attrs": attr2 if attr2 is not None else attr})
             items.append(item)
 
             if len(items) >= req.max_events:
