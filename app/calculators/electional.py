@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 import math
 import os
 
-# Swiss Ephemeris: bazı ortamlarda "pyswisseph" adıyla gelir
+# Swiss Ephemeris import uyumluluğu
 try:
     import swisseph as swe
 except Exception:
@@ -16,9 +16,7 @@ except Exception:
 # Ephemeris yolu (ENV > /app/ephe)
 swe.set_ephe_path(os.getenv("SE_EPHE_PATH", "/app/ephe"))
 
-# --------------------------------------------------------------------
-# Sabitler
-# --------------------------------------------------------------------
+# --- Constants ---
 MAJOR_ASPECTS = {
     "conjunction": 0,
     "sextile": 60,
@@ -42,12 +40,10 @@ PLANETS = {
     "uranus": swe.URANUS, "neptune": swe.NEPTUNE, "pluto": swe.PLUTO
 }
 
-# Ekliptik + hız bayrakları (hız için FLG_SPEED şart)
+# Ekliptik + hız bayrakları (speed için FLG_SPEED şart)
 _SWE_FLAGS = swe.FLG_SWIEPH | swe.FLG_SPEED
 
-# --------------------------------------------------------------------
-# Yardımcılar
-# --------------------------------------------------------------------
+# --- Utilities ---
 def _norm360(angle: float) -> float:
     return angle % 360.0
 
@@ -73,15 +69,13 @@ def _is_mercury_rx(jd_utc: float) -> bool:
     _, spd = _planet_lon_speed(jd_utc, swe.MERCURY)
     return spd < 0
 
-# --------------------------------------------------------------------
-# Çekirdek hesaplar
-# --------------------------------------------------------------------
+# --- Core calculations ---
 def lunar_phase(jd_utc: float) -> Dict[str, object]:
     lon_sun, _ = _planet_lon_speed(jd_utc, swe.SUN)
     lon_moon, _ = _planet_lon_speed(jd_utc, swe.MOON)
     elong = _norm360(lon_moon - lon_sun)
     waxing = elong < 180
-    # ±10° toleransla faz sınıflama
+    # ±10° tolerans
     if _angle_diff(elong, 0) <= 10:
         name = "New Moon"
     elif _angle_diff(elong, 90) <= 10 and waxing:
@@ -102,7 +96,7 @@ def essential_dignities(sign_index: int, planet_name: str) -> Dict[str, bool]:
     }
     exaltation = {
         "sun": [0], "moon": [1], "mercury": [6], "venus": [11],
-        "mars": [3], "jupiter": [4], "saturn": [6]  # Satürn Terazi'de yücelir
+        "mars": [3], "jupiter": [4], "saturn": [6]  # Satürn Libra'da yücelir
     }
     di = domicile.get(planet_name, [])
     ex = exaltation.get(planet_name, [])
@@ -117,12 +111,12 @@ def essential_dignities(sign_index: int, planet_name: str) -> Dict[str, bool]:
 
 def aspects_matrix(jd_utc: float, orb_table: Dict[str, int] | None = None) -> Dict[Tuple[str, str], Dict]:
     """
-    Majör açılar ve "applying" bilgisi.
+    Majör açılar ve 'applying' bilgisi.
     Dönüş: {(a,b): {"aspect": name, "delta": deg, "applying": bool}}
     """
     if orb_table is None:
         orb_table = DEFAULT_ORBS
-
+    # longitudes & speeds
     pos: Dict[str, Tuple[float, float]] = {}
     for name, pid in PLANETS.items():
         lon, spd = _planet_lon_speed(jd_utc, pid)
@@ -133,8 +127,7 @@ def aspects_matrix(jd_utc: float, orb_table: Dict[str, int] | None = None) -> Di
     for i in range(len(names)):
         for j in range(i + 1, len(names)):
             a, b = names[i], names[j]
-            lon_a, spd_a = pos[a]
-            lon_b, spd_b = pos[b]
+            lon_a, spd_a = pos[a]; lon_b, spd_b = pos[b]
             delta = _angle_diff(lon_a, lon_b)
             found = None
             for asp_name, asp_angle in MAJOR_ASPECTS.items():
@@ -143,15 +136,17 @@ def aspects_matrix(jd_utc: float, orb_table: Dict[str, int] | None = None) -> Di
                     found = asp_name
                     break
             if found:
-                # basit applying tanımı: relatif hız ve fark yönü
+                # basit applying: relatif hız * fark yönü
                 applying = (spd_a - spd_b) * ((lon_b - lon_a + 360) % 360) > 0
-                results[(a, b)] = {"aspect": found, "delta": delta, "applying": applying}
+                results[(a, b)] = {
+                    "aspect": found, "delta": delta, "applying": applying
+                }
     return results
 
 def moon_void_of_course(jd_start_utc: float, step_minutes: int = 15) -> Tuple[bool, float, float]:
     """
-    Strict VoC: Mevcut burçta Ay'ın yaptığı SON majör açıdan, bir SONRAKİ burç girişine kadar.
-    Dönüş: (is_voc_now, jd_voc_start, jd_sign_change)
+    (is_voc_now, jd_voc_start, jd_sign_change)
+    Strict VoC: mevcut burçta Ay'ın yaptığı SON majör açıdan, bir SONRAKİ burç girişine kadar.
     """
     step_minutes = int(step_minutes)
     if step_minutes <= 0:
@@ -161,7 +156,7 @@ def moon_void_of_course(jd_start_utc: float, step_minutes: int = 15) -> Tuple[bo
     jd = jd_start_utc
     last_aspect_jd = None
 
-    # Güvenlik: uzun taramalarda sonsuz döngü engeli (yaklaşık bir sinodik ay)
+    # sonsuz döngü güvenliği: ~1 sinodik ay
     max_iters = int((29.5 * 24 * 60) // step_minutes) + 5
     it = 0
     while _moon_sign(jd) == start_sign and it < max_iters:
@@ -200,9 +195,9 @@ def search_electional_windows(
     avoid_moon_voc: bool = True,
 ) -> List[ElectionalScore]:
     """
-    [jd_start .. jd_end] aralığını "inclusive" biçimde tarar; her örnek nokta için
+    [jd_start..jd_end] aralığını **inclusive** tarar; her örnek nokta için
     faz/asalet/açı/retro/VoC kriterlerine göre skor üretir ve en iyi 50 sonucu döndürür.
-    Not: lat/lon şu an kullanılmıyor; imzada tutuldu.
+    Not: lat/lon şimdilik kullanılmıyor; imzada tutuldu.
     """
     step_minutes = int(step_minutes)
     if step_minutes <= 0:
@@ -210,28 +205,25 @@ def search_electional_windows(
     if jd_end < jd_start:
         raise ValueError("jd_end must be >= jd_start")
 
-    # Inclusive adımlama: başlangıç + her adım + (mümkünse) bitiş noktasını kapsar
+    # Inclusive adım sayısı: başlangıç + her adım + bitişi kapsayacak şekilde
     total_min = int(round((jd_end - jd_start) * 24 * 60))
     steps = total_min // step_minutes  # 2h/30m -> 120//30 = 4 → range(5) ile 5 nokta
 
     out: List[ElectionalScore] = []
     for i in range(steps + 1):
         jd = jd_start + (i * step_minutes) / (24 * 60)
-
         reasons: List[str] = []
         score = 0.0
 
         # Faz
         phase = lunar_phase(jd)
         if phase["phase"] in {"New Moon", "First Quarter", "Full Moon", "Last Quarter"}:
-            score += 1.0
-            reasons.append(f"phase={phase['phase']}")
+            score += 1.0; reasons.append(f"phase={phase['phase']}")
 
-        # Dignities: Moon & Venus örneği
+        # Dignities: Moon & Venus
         moon_lon, _ = _planet_lon_speed(jd, swe.MOON)
         venus_lon, _ = _planet_lon_speed(jd, swe.VENUS)
-        moon_sign = int(moon_lon // 30)
-        venus_sign = int(venus_lon // 30)
+        moon_sign = int(moon_lon // 30); venus_sign = int(venus_lon // 30)
         moon_dig = essential_dignities(moon_sign, "moon")
         ven_dig = essential_dignities(venus_sign, "venus")
         if moon_dig["domicile"] or moon_dig["exaltation"]:
@@ -239,7 +231,7 @@ def search_electional_windows(
         if ven_dig["domicile"] or ven_dig["exaltation"]:
             score += 1.0; reasons.append("venus_dignified")
 
-        # Açı matrisi: trine/sextile ve içinde venus/jupiter olan çiftler
+        # İyi açılar: trine/sextile & (venus/jupiter içeren)
         asps = aspects_matrix(jd)
         good = 0
         for (a, b), data in asps.items():
@@ -253,7 +245,7 @@ def search_electional_windows(
         if avoid_merc_rx and _is_mercury_rx(jd):
             score -= 2.0; reasons.append("mercury_rx")
         if avoid_moon_voc:
-            is_voc, voc_start, voc_end = moon_void_of_course(jd, step_minutes=step_minutes)
+            is_voc, _, _ = moon_void_of_course(jd, step_minutes=step_minutes)
             if is_voc:
                 score -= 3.0; reasons.append("moon_voc")
 
