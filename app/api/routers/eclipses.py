@@ -9,13 +9,11 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from app.utils.rate_limit import plan_limiter
 
-# Swiss Ephemeris (bazı ortamlarda pyswisseph adıyla gelir)
 try:
     import swisseph as swe
 except Exception:  # pragma: no cover
     import pyswisseph as swe  # type: ignore
 
-# Ephemeris path
 swe.set_ephe_path(os.getenv("SE_EPHE_PATH", "/app/ephe"))
 
 router = APIRouter(tags=["eclipses"])
@@ -30,7 +28,6 @@ def _jd_to_iso(jd: float) -> str:
     y, m, d, h = swe.revjul(jd, swe.GREG_CAL)
     hh = int(h)
     mm = int(round((h - hh) * 60))
-    # normalize minute=60 durumları güvenle normalize olsun
     base = datetime(y, m, d, 0, 0, tzinfo=timezone.utc)
     return (base + timedelta(hours=hh, minutes=mm)).isoformat()
 
@@ -47,36 +44,47 @@ def _lun_type_name(retflag: int) -> str:
     if retflag & swe.SE_ECL_PENUMBRAL: return "penumbral"
     return "unknown"
 
-# Uyumluluk katmanı: farklı pyswisseph imzaları için güvenli çağrı
-def _call_sol_glob(jd: float, ifl: int) -> Tuple[int, List[float]]:
+def _normalize_ecl_result(out: Any) -> Tuple[int, List[float]]:
     """
-    Döndürür: (retflag, tret_list)  -- tret[0] = maksimum anın JD'si
+    Çeşitli pyswisseph sürümlerine uyum:
+    - (retflag, tret, attr, serr)
+    - (tret, retflag)
+    - (retflag, tret)
     """
-    try:
-        # Bazı sürümler 4 değer döndürür
-        retflag, tret, attr, serr = swe.sol_eclipse_when_glob(jd, ifl, 0)  # type: ignore[misc]
-        return int(retflag), list(tret)
-    except TypeError:
-        # Diğerleri (tret, retflag) döndürür
-        out = swe.sol_eclipse_when_glob(jd, ifl, 0)  # type: ignore[misc]
-        if isinstance(out, tuple) and len(out) == 2:
-            tret, retflag = out
+    if isinstance(out, tuple):
+        if len(out) == 4:
+            retflag, tret, _, _ = out
             return int(retflag), list(tret)
-        # Yalnız iki argüman kabul eden varyant
-        tret, retflag = swe.sol_eclipse_when_glob(jd, ifl)  # type: ignore[misc]
-        return int(retflag), list(tret)
+        if len(out) == 2:
+            a, b = out
+            # a list/tuple ise tret odur; değilse terse çevir
+            if isinstance(a, (list, tuple)):
+                return int(b), list(a)
+            else:
+                return int(a), list(b)
+    raise TypeError(f"Unexpected eclipse result shape: {type(out)} len={len(out) if hasattr(out,'__len__') else 'n/a'}")
+
+def _call_sol_glob(jd: float, ifl: int) -> Tuple[int, List[float]]:
+    # Sırayla farklı imzaları dene
+    for args in [(jd, ifl, 0), (jd, ifl)]:
+        try:
+            out = swe.sol_eclipse_when_glob(*args)  # type: ignore[misc]
+            return _normalize_ecl_result(out)
+        except Exception:
+            continue
+    # Bazı çok eski sürümler parametresiz sadece (jd) kabul edebilir
+    out = swe.sol_eclipse_when_glob(jd)  # type: ignore[misc]
+    return _normalize_ecl_result(out)
 
 def _call_lun_glob(jd: float, ifl: int) -> Tuple[int, List[float]]:
-    try:
-        retflag, tret, attr, serr = swe.lun_eclipse_when_glob(jd, ifl, 0)  # type: ignore[misc]
-        return int(retflag), list(tret)
-    except TypeError:
-        out = swe.lun_eclipse_when_glob(jd, ifl, 0)  # type: ignore[misc]
-        if isinstance(out, tuple) and len(out) == 2:
-            tret, retflag = out
-            return int(retflag), list(tret)
-        tret, retflag = swe.lun_eclipse_when_glob(jd, ifl)  # type: ignore[misc]
-        return int(retflag), list(tret)
+    for args in [(jd, ifl, 0), (jd, ifl)]:
+        try:
+            out = swe.lun_eclipse_when_glob(*args)  # type: ignore[misc]
+            return _normalize_ecl_result(out)
+        except Exception:
+            continue
+    out = swe.lun_eclipse_when_glob(jd)  # type: ignore[misc]
+    return _normalize_ecl_result(out)
 
 # ---------- models ----------
 class RangeRequest(BaseModel):
@@ -85,9 +93,9 @@ class RangeRequest(BaseModel):
     max_events: int = Field(20, ge=1, le=200)
 
 class EclipseItem(BaseModel):
-    kind: str              # solar|lunar
-    type: str              # total|annular|hybrid|partial|penumbral
-    max_ts: str            # ISO8601 UTC
+    kind: str
+    type: str
+    max_ts: str
     jd_max: float
 
 class RangeResponse(BaseModel):
@@ -118,7 +126,7 @@ async def solar_range(req: RangeRequest) -> Dict[str, Any]:
             })
             if len(items) >= req.max_events:
                 break
-            jd = jd_max + 1.0  # bir sonraki tutulmaya atla
+            jd = jd_max + 1.0
         return {"count": len(items), "items": items}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Solar eclipse search failed: {e}")
