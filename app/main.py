@@ -61,6 +61,24 @@ except Exception as e:
     logging.getLogger("uvicorn.error").warning("Lunar router DISABLED: %s", e)
 
 try:
+    from app.api.routers import eclipses  # type: ignore
+    app.include_router(eclipses.router, prefix="/eclipses", tags=["eclipses"])
+except Exception as e:
+    import logging; logging.getLogger("uvicorn.error").warning("Eclipses router DISABLED: %s", e)
+
+try:
+    from app.api.routers import synastry  # type: ignore
+    app.include_router(synastry.router, prefix="/synastry", tags=["synastry"])
+except Exception as e:
+    import logging; logging.getLogger("uvicorn.error").warning("Synastry router DISABLED: %s", e)
+
+try:
+    from app.api.routers import composite  # type: ignore
+    app.include_router(composite.router, prefix="/", tags=["composite"])
+except Exception as e:
+    import logging; logging.getLogger("uvicorn.error").warning("Composite router DISABLED: %s", e)
+
+try:
     from app.api.routers import returns  # type: ignore
     app.include_router(returns.router, prefix="/returns", tags=["returns"])
 except Exception as e:
