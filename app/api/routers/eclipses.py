@@ -5,10 +5,10 @@ import os
 from datetime import datetime, timezone
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from pydantic import BaseModel, Field, model_validator
 
-# ---------- Swiss Ephemeris ----------
+# --- Swiss Ephemeris ---
 try:
     import swisseph as swe
 except Exception:
@@ -17,7 +17,7 @@ except Exception:
 swe.set_ephe_path(os.getenv("SE_EPHE_PATH", "/app/ephe"))
 IFL = swe.FLG_SWIEPH  # hız gerekmiyor
 
-# ---------- I/O Modelleri ----------
+# ===================== Pydantic I/O Modelleri =====================
 
 class DateRangeIn(BaseModel):
     start_year: int = Field(..., ge=1, le=9999)
@@ -46,7 +46,7 @@ class EclipseOut(BaseModel):
     type: Literal["partial", "total", "annular", "annular-total", "penumbral"]
     max_ts: str
     jd_max: float
-    # debug ekstra
+    # debug alanları (isteğe bağlı)
     retflag: Optional[int] = None
     api: Optional[str] = None
 
@@ -55,8 +55,7 @@ class RangeOut(BaseModel):
     count: int
     items: list[EclipseOut]
 
-
-# ---------- Yardımcılar ----------
+# ===================== Yardımcılar =====================
 
 def _ts_from_jd(jd_ut: float) -> str:
     y, m, d, f = swe.revjul(jd_ut, swe.GREG_CAL)
@@ -66,10 +65,7 @@ def _ts_from_jd(jd_ut: float) -> str:
     return datetime(y, m, d, hh, mm, ss, tzinfo=timezone.utc).isoformat()
 
 def _safe_sol_where_is_central(jd_max: float) -> tuple[bool, bool]:
-    """
-    (has_any_central_flag, is_noncentral)
-    where() başarısızsa (False, False) döner.
-    """
+    """(has_any_central_flag, is_noncentral). Hata olursa (False, False)."""
     try:
         geopos = [0.0, 0.0, 0.0]
         attr = [0.0] * 20
@@ -81,14 +77,17 @@ def _safe_sol_where_is_central(jd_max: float) -> tuple[bool, bool]:
         return (False, False)
 
 def _classify_solar(jd_max: float, retflag: int) -> str:
-    # NONCENTRAL ise küresel olarak partial kabul edilir
+    """
+    Küresel tip:
+      - Central path yoksa → partial
+      - Noncentral ise → partial
+      - Aksi halde retflag'e göre: total / annular-total / annular / partial
+    """
     has_central, is_noncentral = _safe_sol_where_is_central(jd_max)
     if has_central and is_noncentral:
         return "partial"
     if not has_central:
-        # merkez çizgi hiç yok → partial
         return "partial"
-    # merkez çizgi varsa retflag'e göre
     if retflag & getattr(swe, "SE_ECL_TOTAL", 1):
         return "total"
     if retflag & getattr(swe, "SE_ECL_ANNULAR_TOTAL", 16):
@@ -99,7 +98,7 @@ def _classify_solar(jd_max: float, retflag: int) -> str:
 
 def _classify_lunar(jd_max: float, retflag: int) -> str:
     """
-    Umbral/penumbral büyüklüklerle kesin sınıflandırma:
+    Ay tutulması tipleri büyüklüklerle kesin:
       umbral >= 1.0 → total
       0 < umbral < 1.0 → partial
       umbral == 0 ve penumbral > 0 → penumbral
@@ -117,7 +116,7 @@ def _classify_lunar(jd_max: float, retflag: int) -> str:
         if pen > 0.0:
             return "penumbral"
     except Exception:
-        # how() yoksa retflag'e düş
+        # how() başarısızsa retflag en iyi tahmindir
         if retflag & getattr(swe, "SE_ECL_TOTAL", 1):
             return "total"
         if retflag & getattr(swe, "SE_ECL_PARTIAL", 4):
@@ -125,13 +124,11 @@ def _classify_lunar(jd_max: float, retflag: int) -> str:
         return "penumbral"
     return "penumbral"
 
-
-# ---------- Arama Motorları ----------
+# ===================== Arama Motorları =====================
 
 def _search_solar(jd_start: float, jd_end: float, max_events: int, debug: bool) -> list[EclipseOut]:
     out: list[EclipseOut] = []
     jd = jd_start
-    # tüm tipleri tara + noncentral (when_glob bu biti kabul ediyor)
     ifltype = (
         getattr(swe, "SE_ECL_TOTAL", 1)
         | getattr(swe, "SE_ECL_ANNULAR", 2)
@@ -167,7 +164,6 @@ def _search_solar(jd_start: float, jd_end: float, max_events: int, debug: bool) 
             retflag=int(rflag) if debug else None,
             api="sol_glob" if debug else None,
         ))
-
         jd = jd_max + 0.1  # bir sonraki olaya atla
 
     return out
@@ -176,7 +172,11 @@ def _search_solar(jd_start: float, jd_end: float, max_events: int, debug: bool) 
 def _search_lunar(jd_start: float, jd_end: float, max_events: int, debug: bool) -> list[EclipseOut]:
     out: list[EclipseOut] = []
     jd = jd_start
-    ifltype = getattr(swe, "SE_ECL_TOTAL", 1) | getattr(swe, "SE_ECL_PARTIAL", 4) | getattr(swe, "SE_ECL_PENUMBRAL", 8)
+    ifltype = (
+        getattr(swe, "SE_ECL_TOTAL", 1)
+        | getattr(swe, "SE_ECL_PARTIAL", 4)
+        | getattr(swe, "SE_ECL_PENUMBRAL", 8)
+    )
     backward = 0
     safety = 0
     while jd <= jd_end and len(out) < max_events and safety < 300:
@@ -205,19 +205,17 @@ def _search_lunar(jd_start: float, jd_end: float, max_events: int, debug: bool) 
             retflag=int(rflag) if debug else None,
             api="lun_when" if debug else None,
         ))
-
         jd = jd_max + 0.1
 
     return out
 
+# ===================== Router =====================
 
-# ---------- Router ----------
-
-router = APIRouter(prefix="/eclipses", tags=["eclipses"])
+# DİKKAT: prefix YOK! (main.py zaten prefix="/eclipses" ile include ediyor)
+router = APIRouter(tags=["eclipses"])
 
 @router.post("/solar/range", response_model=RangeOut)
 def solar_range(inp: DateRangeIn) -> RangeOut:
-    # yalnızca tarih validasyonu 400 atar; arama hataları sönümlenir
     jd_start = swe.julday(inp.start_year, inp.start_month, inp.start_day, 0.0, swe.GREG_CAL)
     jd_end = swe.julday(inp.end_year, inp.end_month, inp.end_day, 0.0, swe.GREG_CAL)
     items = _search_solar(jd_start, jd_end, inp.max_events, inp.debug)
