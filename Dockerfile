@@ -44,6 +44,11 @@ COPY . /app
 # (opsiyonel) ephemeris dosyalarını imaja koyuyorsan ephe/ klasörü burada bulunur
 # COPY ephe/ ephe/
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD python -c "import urllib.request,sys; \
+    urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3); \
+    sys.exit(0)" || exit 1
+
 # izinler
 RUN useradd -u 10001 -m engineuser && chown -R 10001:10001 /app
 USER 10001
