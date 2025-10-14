@@ -1,250 +1,227 @@
 # app/api/routers/eclipses.py
 from __future__ import annotations
 
-from typing import List, Tuple, Optional
+from datetime import datetime, timezone
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, model_validator
 
+import os
+
+# --- Swiss Ephemeris yüklemesi ---
 try:
-    import swisseph as swe  # pyswisseph
+    import swisseph as swe
 except Exception:
-    import pyswisseph as swe
+    import pyswisseph as swe  # bazı ortamlarda bu isimle geliyor
+
+# Ephemeris path
+swe.set_ephe_path(os.getenv("SE_EPHE_PATH", "/app/ephe"))
+
+IFL = swe.FLG_SWIEPH  # yeterli; hız gerekmiyor
+
+# --- Pydantic modelleri ---
+
+class DateRangeIn(BaseModel):
+    start_year: int = Field(..., ge=1, le=9999)
+    start_month: int = Field(..., ge=1, le=12)
+    start_day: int = Field(..., ge=1, le=31)
+    end_year: int = Field(..., ge=1, le=9999)
+    end_month: int = Field(..., ge=1, le=12)
+    end_day: int = Field(..., ge=1, le=31)
+    max_events: int = Field(10, ge=1, le=50)
+    debug: bool = False
+
+    @model_validator(mode="after")
+    def _check_order(self):
+        try:
+            _ = swe.julday(self.start_year, self.start_month, self.start_day, 0.0, swe.GREG_CAL)
+            _ = swe.julday(self.end_year, self.end_month, self.end_day, 0.0, swe.GREG_CAL)
+        except Exception as e:
+            raise ValueError(f"Invalid date: {e}")
+        jd_start = swe.julday(self.start_year, self.start_month, self.start_day, 0.0, swe.GREG_CAL)
+        jd_end = swe.julday(self.end_year, self.end_month, self.end_day, 0.0, swe.GREG_CAL)
+        if jd_end < jd_start:
+            raise ValueError("end date must be >= start date")
+        return self
+
+
+class EclipseOut(BaseModel):
+    kind: Literal["solar", "lunar"]
+    type: Literal["partial", "total", "annular", "annular-total", "penumbral"]
+    max_ts: str
+    jd_max: float
+    # Opsiyonel debug alanları
+    retflag: Optional[int] = None
+    api: Optional[str] = None
+
+
+class RangeOut(BaseModel):
+    count: int
+    items: list[EclipseOut]
+
+
+# --- Yardımcılar ---
+
+def _ts(jd_ut: float) -> str:
+    y, m, d, f = swe.revjul(jd_ut, swe.GREG_CAL)
+    hh = int(f * 24)
+    mm = int((f * 24 - hh) * 60)
+    ss = int(round((((f * 24) - hh) * 60 - mm) * 60))
+    dt = datetime(y, m, d, hh, mm, ss, tzinfo=timezone.utc)
+    return dt.isoformat()
+
+def _classify_solar(jd_max: float, retflag: int) -> str:
+    """
+    Swiss Ephemeris bazı durumlarda global aramada (when_glob) noncentral olaylar için
+    annular/annular-total bitlerini set edebiliyor. Küresel görünürlük için:
+    - Eğer central path yoksa → partial
+    - Noncentral ise → partial
+    - Aksi halde retflag’e göre total / annular / annular-total
+    """
+    try:
+        # where() → central path bilgisi. partial-only olaylarda CENTRAL/NONCENTRAL set olmaz.
+        geopos = [0.0, 0.0, 0.0]
+        attr = [0.0] * 20
+        wflag = swe.sol_eclipse_where(jd_max, IFL, geopos, attr)
+        has_central = bool(wflag & (swe.SE_ECL_CENTRAL | swe.SE_ECL_NONCENTRAL))
+        if not has_central:
+            return "partial"
+        if wflag & swe.SE_ECL_NONCENTRAL:
+            # Noncentral: Dünya üzerinde hiçbir yerde merkez çizgi yok → yalnızca partial gözlenir.
+            return "partial"
+    except Exception:
+        # where() başarısızsa retflag'e düşeriz
+        pass
+
+    if retflag & getattr(swe, "SE_ECL_TOTAL", 1):
+        return "total"
+    if retflag & getattr(swe, "SE_ECL_ANNULAR_TOTAL", 16):
+        return "annular-total"
+    if retflag & getattr(swe, "SE_ECL_ANNULAR", 2):
+        return "annular"
+    # SwissEph build'lerine göre partial biti 4
+    return "partial"
+
+def _classify_lunar(jd_max: float, retflag: int) -> str:
+    """
+    Ay tutulmasında küresel tip, umbral/penumbral büyüklüklerle kesin belirlenebilir:
+      - umbral >= 1.0 → total
+      - 0 < umbral < 1.0 → partial
+      - umbral == 0 ve penumbral > 0 → penumbral
+    """
+    try:
+        # jSwisseph dokümanında geopos istenir ama Ay tutulması için konum kritik değildir.
+        geopos = [0.0, 0.0, 0.0]
+        attr = [0.0] * 20
+        _ = swe.lun_eclipse_how(jd_max, IFL, geopos, attr)
+        umbral = float(attr[0])
+        pen = float(attr[1])
+        if umbral >= 0.999999:  # sayısal güvenlik
+            return "total"
+        if umbral > 0.0:
+            return "partial"
+        if pen > 0.0:
+            return "penumbral"
+    except Exception:
+        # how() olmazsa retflag'e göre en iyi tahmin
+        if retflag & getattr(swe, "SE_ECL_TOTAL", 1):
+            return "total"
+        if retflag & getattr(swe, "SE_ECL_PARTIAL", 4):
+            return "partial"
+        return "penumbral"
+    # Güvenlik
+    return "penumbral"
+
+def _search_solar(jd_start: float, jd_end: float, max_events: int, debug: bool) -> list[EclipseOut]:
+    out: list[EclipseOut] = []
+    jd = jd_start
+    # Türkçe: herhangi bir tip + noncentral’ı da ara
+    ifltype = (
+        swe.SE_ECL_TOTAL
+        | swe.SE_ECL_ANNULAR
+        | swe.SE_ECL_ANNULAR_TOTAL
+        | swe.SE_ECL_PARTIAL
+        | swe.SE_ECL_NONCENTRAL
+    )
+    backward = 0
+    safety = 0
+    while jd <= jd_end and len(out) < max_events and safety < 200:
+        safety += 1
+        try:
+            tret, rflag = swe.sol_eclipse_when_glob(jd, ifltype, IFL, backward)
+            jd_max = float(tret[0])
+            if jd_max == 0 or jd_max < jd or jd_max > jd_end:
+                # bir sonraki gün(e) atla
+                jd += 1.0
+                continue
+            typ = _classify_solar(jd_max, int(rflag))
+            out.append(EclipseOut(
+                kind="solar",
+                type=typ,
+                max_ts=_ts(jd_max),
+                jd_max=jd_max,
+                retflag=int(rflag) if debug else None,
+                api="sol_glob" if debug else None,
+            ))
+            # sonraki arama için küçük bir ilerleme: maksimum anın biraz ilerisinden devam
+            jd = jd_max + 0.1
+        except Exception as e:
+            # Bir şey ters giderse bir gün atlayalım
+            if debug and len(out) < max_events:
+                # en azından denemeye devam edelim
+                pass
+            jd += 1.0
+    return out
+
+def _search_lunar(jd_start: float, jd_end: float, max_events: int, debug: bool) -> list[EclipseOut]:
+    out: list[EclipseOut] = []
+    jd = jd_start
+    ifltype = swe.SE_ECL_TOTAL | swe.SE_ECL_PARTIAL | swe.SE_ECL_PENUMBRAL
+    backward = 0
+    safety = 0
+    while jd <= jd_end and len(out) < max_events and safety < 200:
+        safety += 1
+        try:
+            tret, rflag = swe.lun_eclipse_when(jd, ifltype, IFL, backward)
+            jd_max = float(tret[0])
+            if jd_max == 0 or jd_max < jd or jd_max > jd_end:
+                jd += 1.0
+                continue
+            typ = _classify_lunar(jd_max, int(rflag))
+            out.append(EclipseOut(
+                kind="lunar",
+                type=typ,
+                max_ts=_ts(jd_max),
+                jd_max=jd_max,
+                retflag=int(rflag) if debug else None,
+                api="lun_when" if debug else None,
+            ))
+            jd = jd_max + 0.1
+        except Exception:
+            jd += 1.0
+    return out
+
+# --- Router ---
 
 router = APIRouter()
 
-# ---------- Schemas ----------
+@router.post("/solar/range", response_model=RangeOut)
+def solar_range(inp: DateRangeIn) -> RangeOut:
+    try:
+        jd_start = swe.julday(inp.start_year, inp.start_month, inp.start_day, 0.0, swe.GREG_CAL)
+        jd_end = swe.julday(inp.end_year, inp.end_month, inp.end_day, 0.0, swe.GREG_CAL)
+        items = _search_solar(jd_start, jd_end, inp.max_events, inp.debug)
+        return RangeOut(count=len(items), items=items)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Solar eclipse search failed: {e}")
 
-class _RangeBase(BaseModel):
-    start_year: int
-    start_month: int
-    start_day: int
-    end_year: int
-    end_month: int
-    end_day: int
-    max_events: int = Field(default=10, ge=1, le=50)
-    debug: bool = False
-
-    @validator("start_month", "end_month")
-    def _m_ok(cls, v):
-        if not (1 <= v <= 12):
-            raise ValueError("Month must be 1..12")
-        return v
-
-    @validator("start_day", "end_day")
-    def _d_ok(cls, v):
-        if not (1 <= v <= 31):
-            raise ValueError("Day must be 1..31")
-        return v
-
-
-class SolarRangeReq(_RangeBase):
-    pass
-
-
-class LunarRangeReq(_RangeBase):
-    pass
-
-
-class EclipseItem(BaseModel):
-    kind: str                 # "solar" | "lunar"
-    type: str                 # solar: total/annular/partial ; lunar: total/partial/penumbral
-    max_ts: str               # ISO UTC
-    jd_max: float
-    retflag: Optional[int] = None  # debug için
-    api: Optional[str] = None      # debug için
-
-
-class EclipseRangeResp(BaseModel):
-    count: int
-    items: List[EclipseItem]
-
-
-# ---------- Helpers ----------
-
-def _jd(y: int, m: int, d: int, hour_ut: float = 0.0) -> float:
-    return swe.julday(y, m, d, hour_ut, swe.GREG_CAL)
-
-
-def _revjul_ts(jd_ut: float) -> str:
-    y, m, d, h = swe.revjul(jd_ut, swe.GREG_CAL)
-    hh = int(h)
-    mm = int((h - hh) * 60 + 1e-9)
-    ss = int(round((((h - hh) * 60) - mm) * 60))
-    return f"{y:04d}-{m:02d}-{d:02d}T{hh:02d}:{mm:02d}:{ss:02d}+00:00"
-
-
-# pyswisseph sürümleri dönüş sırasını değiştirebiliyor
-def _normalize_when_ret(ret: Tuple) -> Tuple[int, List[float]]:
-    a, b = ret[0], ret[1]
-    if isinstance(a, int):
-        return a, list(b)     # (retflag, tret[])
-    else:
-        return int(b), list(a)  # (tret[], retflag)
-
-
-def _solar_type_from_flag(retflag: int) -> str:
-    ECL_TOTAL = getattr(swe, "SE_ECL_TOTAL", 1)
-    ECL_ANNULAR = getattr(swe, "SE_ECL_ANNULAR", 2)
-    ECL_PARTIAL = getattr(swe, "SE_ECL_PARTIAL", 4)  # ← DOĞRU değer
-    ECL_NONCENTRAL = getattr(swe, "SE_ECL_NONCENTRAL", 64)
-    ECL_ANNULAR_TOTAL = getattr(swe, "SE_ECL_ANNULAR_TOTAL", 16)
-
-    # Non-central olayları kullanıcıya partial olarak raporla
-    if retflag & ECL_NONCENTRAL:
-        return "partial"
-    if retflag & ECL_TOTAL:
-        return "total"
-    if retflag & (ECL_ANNULAR | ECL_ANNULAR_TOTAL):
-        return "annular"
-    if retflag & ECL_PARTIAL:
-        return "partial"
-    return "partial"
-
-
-def _lunar_type_from_flag(retflag: int) -> str:
-    ECL_TOTAL = getattr(swe, "SE_ECL_TOTAL", 1)
-    ECL_PARTIAL = getattr(swe, "SE_ECL_PARTIAL", 2)
-    ECL_PENUMBRAL = getattr(swe, "SE_ECL_PENUMBRAL", 4)
-    if retflag & ECL_TOTAL:
-        return "total"
-    if retflag & ECL_PARTIAL:
-        return "partial"
-    if retflag & ECL_PENUMBRAL:
-        return "penumbral"
-    return "penumbral"
-
-
-def _call_sol_when_glob(jd_start: float, iflag: int) -> Tuple[int, List[float]]:
-    ECL_TOTAL = getattr(swe, "SE_ECL_TOTAL", 1)
-    ECL_ANNULAR = getattr(swe, "SE_ECL_ANNULAR", 2)
-    ECL_PARTIAL = getattr(swe, "SE_ECL_PARTIAL", 4)        # ← DOĞRU değer
-    ECL_ANNULAR_TOTAL = getattr(swe, "SE_ECL_ANNULAR_TOTAL", 16)
-    ecl_all = ECL_TOTAL | ECL_ANNULAR | ECL_ANNULAR_TOTAL | ECL_PARTIAL
-
-    last_exc = None
-    for args in [
-        (jd_start, iflag, ecl_all, 0),
-        (jd_start, iflag, ecl_all),
-        (jd_start, iflag),
-        (jd_start,)
-    ]:
-        try:
-            ret = swe.sol_eclipse_when_glob(*args)
-            return _normalize_when_ret(ret)
-        except Exception as e:
-            last_exc = e
-    raise RuntimeError(f"sol_eclipse_when_glob failed: {last_exc}")
-
-
-def _call_lun_when_glob(jd_start: float, iflag: int) -> Tuple[int, List[float]]:
-    ECL_TOTAL = getattr(swe, "SE_ECL_TOTAL", 1)
-    ECL_PARTIAL = getattr(swe, "SE_ECL_PARTIAL", 2)
-    ECL_PENUMBRAL = getattr(swe, "SE_ECL_PENUMBRAL", 4)
-    ecl_all = ECL_TOTAL | ECL_PARTIAL | ECL_PENUMBRAL
-
-    last_exc = None
-    for args in [(jd_start, iflag, ecl_all, 0), (jd_start, iflag, ecl_all), (jd_start, iflag)]:
-        try:
-            fn = getattr(swe, "lun_eclipse_when_glob")
-            ret = fn(*args)
-            return _normalize_when_ret(ret)
-        except Exception as e:
-            last_exc = e
-    for args in [(jd_start, iflag, ecl_all, 0), (jd_start, iflag, ecl_all), (jd_start, iflag), (jd_start,)]:
-        try:
-            fn = getattr(swe, "lun_eclipse_when")
-            ret = fn(*args)
-            return _normalize_when_ret(ret)
-        except Exception as e:
-            last_exc = e
-    raise RuntimeError(f"lun_eclipse_when(_glob) failed: {last_exc}")
-
-
-# ---------- Routes ----------
-# NOT: burada '/eclipses' yok; main.py prefix ekliyor.
-
-@router.post("/solar/range", response_model=EclipseRangeResp)
-def solar_range(req: SolarRangeReq) -> EclipseRangeResp:
-    jd = _jd(req.start_year, req.start_month, req.start_day)
-    jd_end = _jd(req.end_year, req.end_month, req.end_day)
-    if jd_end <= jd:
-        raise HTTPException(status_code=400, detail="Invalid date range")
-
-    iflag = getattr(swe, "FLG_SWIEPH", getattr(swe, "SEFLG_SWIEPH", 2))
-    items: List[EclipseItem] = []
-    guard = 0
-
-    while jd < jd_end and len(items) < req.max_events and guard < 200:
-        guard += 1
-        try:
-            retflag, tret = _call_sol_when_glob(jd, iflag)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Solar eclipse search failed: {e}")
-
-        jd_max = float(tret[0])
-        if jd_max <= 0:
-            jd += 10
-            continue
-
-        # >>> aralık filtresi: aralığın dışındaysa ekleme ve bitir
-        if jd_max > jd_end:
-            break
-
-        etype = _solar_type_from_flag(retflag)
-        items.append(
-            EclipseItem(
-                kind="solar",
-                type=etype,
-                max_ts=_revjul_ts(jd_max),
-                jd_max=jd_max,
-                retflag=retflag if req.debug else None,
-                api="sol_glob",
-            )
-        )
-        jd = jd_max + 1.0
-
-    return EclipseRangeResp(count=len(items), items=items)
-
-
-@router.post("/lunar/range", response_model=EclipseRangeResp)
-def lunar_range(req: LunarRangeReq) -> EclipseRangeResp:
-    jd = _jd(req.start_year, req.start_month, req.start_day)
-    jd_end = _jd(req.end_year, req.end_month, req.end_day)
-    if jd_end <= jd:
-        raise HTTPException(status_code=400, detail="Invalid date range")
-
-    iflag = getattr(swe, "FLG_SWIEPH", getattr(swe, "SEFLG_SWIEPH", 2))
-    items: List[EclipseItem] = []
-    guard = 0
-
-    while jd < jd_end and len(items) < req.max_events and guard < 200:
-        guard += 1
-        try:
-            retflag, tret = _call_lun_when_glob(jd, iflag)
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Lunar eclipse search failed: {e}")
-
-        jd_max = float(tret[0])
-        if jd_max <= 0:
-            jd += 10
-            continue
-
-        # >>> aralık filtresi
-        if jd_max > jd_end:
-            break
-
-        ltype = _lunar_type_from_flag(retflag)
-        items.append(
-            EclipseItem(
-                kind="lunar",
-                type=ltype,
-                max_ts=_revjul_ts(jd_max),
-                jd_max=jd_max,
-                retflag=retflag if req.debug else None,
-                api="lun_when",
-            )
-        )
-        jd = jd_max + 1.0
-
-    return EclipseRangeResp(count=len(items), items=items)
+@router.post("/lunar/range", response_model=RangeOut)
+def lunar_range(inp: DateRangeIn) -> RangeOut:
+    try:
+        jd_start = swe.julday(inp.start_year, inp.start_month, inp.start_day, 0.0, swe.GREG_CAL)
+        jd_end = swe.julday(inp.end_year, inp.end_month, inp.end_day, 0.0, swe.GREG_CAL)
+        items = _search_lunar(jd_start, jd_end, inp.max_events, inp.debug)
+        return RangeOut(count=len(items), items=items)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Lunar eclipse search failed: {e}")
