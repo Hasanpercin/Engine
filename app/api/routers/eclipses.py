@@ -33,10 +33,10 @@ def _jd_to_iso(jd: float) -> str:
 # Bayraklar (sabitler bazı build’larda eksik olabiliyor diye getattr ile güvenli al)
 ECL_TOTAL          = getattr(swe, "SE_ECL_TOTAL",          1)
 ECL_ANNULAR        = getattr(swe, "SE_ECL_ANNULAR",        2)
-ECL_PARTIAL        = getattr(swe, "SE_ECL_PARTIAL",        4)
-ECL_ANNULAR_TOTAL  = getattr(swe, "SE_ECL_ANNULAR_TOTAL",  8)   # solar hybrid
-ECL_NONCENTRAL     = getattr(swe, "SE_ECL_NONCENTRAL",     16)  # solar
-ECL_PENUMBRAL      = getattr(swe, "SE_ECL_PENUMBRAL",      4)   # lunar penumbral (aynı değer: 4)
+ECL_PARTIAL        = getattr(swe, "SE_ECL_PARTIAL",        4)    # solar partial
+ECL_ANNULAR_TOTAL  = getattr(swe, "SE_ECL_ANNULAR_TOTAL",  8)    # solar hybrid
+ECL_NONCENTRAL     = getattr(swe, "SE_ECL_NONCENTRAL",     16)   # solar
+ECL_PENUMBRAL      = getattr(swe, "SE_ECL_PENUMBRAL",      4)    # lunar penumbral (aynı bit değeri)
 
 def _normalize_ecl_result(out: Any) -> Tuple[int, List[float], Optional[List[float]]]:
     """
@@ -79,7 +79,7 @@ def _call_lun_glob_or_when(jd: float, ifl: int) -> Tuple[int, List[float], Optio
             return ret, tret, attr, "lun_glob"
         except Exception:
             continue
-    # Sonra yerel (0,0) varsayımlı)
+    # Sonra yerel (0,0) varsayımlı
     for args in ((jd, ifl, 0), (jd, ifl), (jd,)):
         try:
             out = swe.lun_eclipse_when(*args)  # type: ignore[misc]
@@ -90,10 +90,13 @@ def _call_lun_glob_or_when(jd: float, ifl: int) -> Tuple[int, List[float], Optio
     return 0, [], None, "lun_none"
 
 def _sol_how_at(jd: float, ifl: int) -> Tuple[Optional[int], Optional[List[float]]]:
-    # Çeşitli imzaları dene (geomerkez: lon=0, lat=0, alt=0; basınç/sıcaklık 0)
+    """
+    Solar tür teyidi: jd_max anında global sınıflama (geomerkez ~ 0,0,0).
+    Doğru imza: (tjd_ut, ifl, geopos[lon,lat,alt], atpress, attemp)
+    """
     for args in (
-        (jd, ifl, 0.0, 0.0, 0.0, 0.0, 0.0),
         (jd, ifl, (0.0, 0.0, 0.0), 0.0, 0.0),
+        (jd, ifl, [0.0, 0.0, 0.0], 0.0, 0.0),
     ):
         try:
             out = swe.sol_eclipse_how(*args)  # type: ignore[misc]
@@ -105,9 +108,13 @@ def _sol_how_at(jd: float, ifl: int) -> Tuple[Optional[int], Optional[List[float
     return None, None
 
 def _lun_how_at(jd: float, ifl: int) -> Tuple[Optional[int], Optional[List[float]]]:
+    """
+    Lunar tür teyidi: jd_max anında global sınıflama.
+    Doğru imza: (tjd_ut, ifl, geopos[lon,lat,alt], atpress, attemp)
+    """
     for args in (
-        (jd, ifl, 0.0, 0.0, 0.0),
-        (jd, ifl, (0.0, 0.0), 0.0, 0.0),
+        (jd, ifl, (0.0, 0.0, 0.0), 0.0, 0.0),
+        (jd, ifl, [0.0, 0.0, 0.0], 0.0, 0.0),
     ):
         try:
             out = swe.lun_eclipse_how(*args)  # type: ignore[misc]
@@ -136,11 +143,10 @@ def _classify_lunar(retflag: int) -> str:
     # Lunar: total > partial > penumbral
     if retflag & ECL_TOTAL:
         return "total"
-    # Lunar partial bayrağı bazı build’larda 2’dir; ECL_PARTIAL (4) solar içindir.
-    # Ancak pyswisseph SE_ECL_PARTIAL sabiti globaldir; retflag değerine göre karar veriyoruz.
-    if retflag & 2:  # güvenli: lunar partial
+    # Lunar partial çoğu build’da 2; penumbral 4.
+    if retflag & 2:
         return "partial"
-    if retflag & ECL_PENUMBRAL:  # 4
+    if retflag & ECL_PENUMBRAL:
         return "penumbral"
     return "unknown"
 
@@ -238,7 +244,7 @@ async def lunar_range(req: RangeRequest) -> Dict[str, Any]:
                 jd = jd + 25.0
                 continue
 
-            # jd_max’te global “how” ile yeniden bayrak al (lunar’da özellikle kritik)
+            # jd_max’te global “how” ile yeniden bayrak al (lunar’da kritik)
             ret2, attr2 = _lun_how_at(jd_max, ifl)
             use_ret = int(ret2) if ret2 is not None else int(retflag)
             item: Dict[str, Any] = {
