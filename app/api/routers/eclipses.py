@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, validator
 try:
     import swisseph as swe  # pyswisseph
 except Exception:
-    import pyswisseph as swe  # bazı ortamlarda böyle geçer
+    import pyswisseph as swe
 
 router = APIRouter()
 
@@ -74,23 +74,23 @@ def _revjul_ts(jd_ut: float) -> str:
     return f"{y:04d}-{m:02d}-{d:02d}T{hh:02d}:{mm:02d}:{ss:02d}+00:00"
 
 
-# bazı pyswisseph sürümlerinde dönüş sırası değişebiliyor
+# pyswisseph sürümleri dönüş sırasını değiştirebiliyor
 def _normalize_when_ret(ret: Tuple) -> Tuple[int, List[float]]:
     a, b = ret[0], ret[1]
     if isinstance(a, int):
-        return a, list(b)     # (retflag, tret)
+        return a, list(b)     # (retflag, tret[])
     else:
-        return int(b), list(a)  # (tret, retflag)
+        return int(b), list(a)  # (tret[], retflag)
 
 
 def _solar_type_from_flag(retflag: int) -> str:
     ECL_TOTAL = getattr(swe, "SE_ECL_TOTAL", 1)
     ECL_ANNULAR = getattr(swe, "SE_ECL_ANNULAR", 2)
-    ECL_PARTIAL = getattr(swe, "SE_ECL_PARTIAL", 32)
+    ECL_PARTIAL = getattr(swe, "SE_ECL_PARTIAL", 4)  # ← DOĞRU değer
     ECL_NONCENTRAL = getattr(swe, "SE_ECL_NONCENTRAL", 64)
     ECL_ANNULAR_TOTAL = getattr(swe, "SE_ECL_ANNULAR_TOTAL", 16)
 
-    # tercih: NONCENTRAL → partial say
+    # Non-central olayları kullanıcıya partial olarak raporla
     if retflag & ECL_NONCENTRAL:
         return "partial"
     if retflag & ECL_TOTAL:
@@ -118,7 +118,7 @@ def _lunar_type_from_flag(retflag: int) -> str:
 def _call_sol_when_glob(jd_start: float, iflag: int) -> Tuple[int, List[float]]:
     ECL_TOTAL = getattr(swe, "SE_ECL_TOTAL", 1)
     ECL_ANNULAR = getattr(swe, "SE_ECL_ANNULAR", 2)
-    ECL_PARTIAL = getattr(swe, "SE_ECL_PARTIAL", 32)
+    ECL_PARTIAL = getattr(swe, "SE_ECL_PARTIAL", 4)        # ← DOĞRU değer
     ECL_ANNULAR_TOTAL = getattr(swe, "SE_ECL_ANNULAR_TOTAL", 16)
     ecl_all = ECL_TOTAL | ECL_ANNULAR | ECL_ANNULAR_TOTAL | ECL_PARTIAL
 
@@ -144,7 +144,6 @@ def _call_lun_when_glob(jd_start: float, iflag: int) -> Tuple[int, List[float]]:
     ecl_all = ECL_TOTAL | ECL_PARTIAL | ECL_PENUMBRAL
 
     last_exc = None
-    # *_glob dene
     for args in [(jd_start, iflag, ecl_all, 0), (jd_start, iflag, ecl_all), (jd_start, iflag)]:
         try:
             fn = getattr(swe, "lun_eclipse_when_glob")
@@ -152,7 +151,6 @@ def _call_lun_when_glob(jd_start: float, iflag: int) -> Tuple[int, List[float]]:
             return _normalize_when_ret(ret)
         except Exception as e:
             last_exc = e
-    # global wrapper
     for args in [(jd_start, iflag, ecl_all, 0), (jd_start, iflag, ecl_all), (jd_start, iflag), (jd_start,)]:
         try:
             fn = getattr(swe, "lun_eclipse_when")
@@ -164,7 +162,7 @@ def _call_lun_when_glob(jd_start: float, iflag: int) -> Tuple[int, List[float]]:
 
 
 # ---------- Routes ----------
-# DİKKAT: Burada '/eclipses' YOK; main.py prefix ekliyor.
+# NOT: burada '/eclipses' yok; main.py prefix ekliyor.
 
 @router.post("/solar/range", response_model=EclipseRangeResp)
 def solar_range(req: SolarRangeReq) -> EclipseRangeResp:
@@ -188,6 +186,10 @@ def solar_range(req: SolarRangeReq) -> EclipseRangeResp:
         if jd_max <= 0:
             jd += 10
             continue
+
+        # >>> aralık filtresi: aralığın dışındaysa ekleme ve bitir
+        if jd_max > jd_end:
+            break
 
         etype = _solar_type_from_flag(retflag)
         items.append(
@@ -227,6 +229,10 @@ def lunar_range(req: LunarRangeReq) -> EclipseRangeResp:
         if jd_max <= 0:
             jd += 10
             continue
+
+        # >>> aralık filtresi
+        if jd_max > jd_end:
+            break
 
         ltype = _lunar_type_from_flag(retflag)
         items.append(
