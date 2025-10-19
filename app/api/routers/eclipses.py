@@ -157,32 +157,35 @@ def _classify_lunar(retflag: int) -> str:
 
 # ---------- models ----------
 class RangeRequest(BaseModel):
-    start_year: int
-    start_month: int
-    start_day: int
-    end_year: int
-    end_month: int
-    end_day: int
-    max_events: int = Field(20, ge=1, le=200)
-    debug: bool = False
+    start_year: int = Field(..., description="Başlangıç yılı (UTC)")
+    start_month: int = Field(..., description="Başlangıç ayı (1-12, UTC)")
+    start_day: int = Field(..., description="Başlangıç günü (1-31, UTC)")
+    end_year: int = Field(..., description="Bitiş yılı (UTC)")
+    end_month: int = Field(..., description="Bitiş ayı (1-12, UTC)")
+    end_day: int = Field(..., description="Bitiş günü (1-31, UTC)")
+    max_events: int = Field(20, ge=1, le=200, description="En fazla kaç tutulma döndürülsün")
+    debug: bool = Field(False, description="True ise ek tanı/flag bilgileri de döner")
 
 class EclipseItem(BaseModel):
-    kind: str
-    type: str
-    max_ts: str
-    jd_max: float
-    retflag: Optional[int] = None
-    api: Optional[str] = None
-    attrs: Optional[List[float]] = None
-    centrality: Optional[str] = None
+    kind: str = Field(..., description='Tutulma türü ("solar" veya "lunar")')
+    type: str = Field(..., description='Sınıf ("total", "annular", "hybrid", "partial", "penumbral", "unknown")')
+    max_ts: str = Field(..., description="Maksimum anın UTC ISO8601 zaman damgası")
+    jd_max: float = Field(..., description="Maksimum anın Jülyen Günü")
+    retflag: Optional[int] = Field(None, description="Detay bayrak (debug=1 iken)")
+    api: Optional[str] = Field(None, description="Kullanılan alt API (debug=1 iken)")
+    attrs: Optional[List[float]] = Field(None, description="How/attr dizisi (debug=1 iken)")
+    centrality: Optional[str] = Field(None, description='Merkezlilik ("central"/"noncentral", debug=1 iken)')
 
 class RangeResponse(BaseModel):
-    count: int
-    items: List[EclipseItem]
+    count: int = Field(..., description="Dönen tutulma sayısı")
+    items: List[EclipseItem] = Field(..., description="Tutulma listesi")
 
 # ---------- endpoints ----------
 @router.post(
     "/solar/range",
+    operation_id="eclipses_solar_range",
+    summary="Güneş tutulmaları (aralık taraması)",
+    description="Verilen tarih aralığında (UTC) global Güneş tutulmalarını arar ve maksimum anlarını listeler.",
     response_model=RangeResponse,
     response_model_exclude_none=True,
     dependencies=[Depends(plan_limiter("PRO"))],
@@ -234,6 +237,9 @@ async def solar_range(req: RangeRequest) -> Dict[str, Any]:
 
 @router.post(
     "/lunar/range",
+    operation_id="eclipses_lunar_range",
+    summary="Ay tutulmaları (aralık taraması)",
+    description="Verilen tarih aralığında (UTC) global Ay tutulmalarını arar ve maksimum anlarını listeler.",
     response_model=RangeResponse,
     response_model_exclude_none=True,
     dependencies=[Depends(plan_limiter("PRO"))],
