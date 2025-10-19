@@ -9,8 +9,12 @@ WORKDIR /app
 # derleme araçları (wheel çıkarmak için)
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential gcc && rm -rf /var/lib/apt/lists/*
 
+# pip/setuptools/wheel upgrade -> dependency resolver hız/kare
+RUN python -m pip install --upgrade pip setuptools wheel
+
 # bağımlılıklar
 COPY requirements.txt .
+# Not: requirements.txt içinde pydantic-settings>=2.5.2 ve fastapi-mcp==0.4.0 olmalı (çatışmayı çözmek için)
 RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 # ---------- runtime ----------
@@ -35,6 +39,8 @@ WORKDIR /app
 
 # wheel'leri yükle
 COPY --from=builder /wheels /wheels
+# (opsiyonel) runtime imajında da pip'i güncellemek istersen uncomment et:
+# RUN python -m pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir /wheels/* && rm -rf /wheels
 
 # kodu komple kopyala (bootstrap_ephe.py, ephe/, app/, vs.)
@@ -45,9 +51,7 @@ COPY . /app
 # COPY ephe/ ephe/
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request,sys; \
-    urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3); \
-    sys.exit(0)" || exit 1
+  CMD python -c "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3); sys.exit(0)" || exit 1
 
 # izinler
 RUN useradd -u 10001 -m engineuser && chown -R 10001:10001 /app
@@ -55,6 +59,5 @@ USER 10001
 
 EXPOSE 8000
 
-# Ephemeris yoksa (seas_00.se1) varsa bootstrap'i çalıştır, ardından uvicorn'u başlat
-# NOT: /opt/venv/bin/uvicorn YOK; PATH'ten 'uvicorn' çağrılıyor.
+# Ephemeris yoksa bootstrap, sonra uvicorn
 CMD ["/bin/sh","-c","if [ ! -f \"$SE_EPHE_PATH/seas_00.se1\" ] && [ -f /app/bootstrap_ephe.py ]; then python /app/bootstrap_ephe.py; fi; exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --access-log"]
