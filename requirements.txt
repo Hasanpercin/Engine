@@ -2,55 +2,57 @@
 # Python 3.11+
 
 # Core Astrology
-kerykeion==4.14.0              # Main astrology library (AGPL-3.0)
-pyswisseph==2.10.3.2           # Swiss Ephemeris (GPL-2.0+)
-immanuel==1.4.2                # Progressions and additional calculations (GPL-3.0)
+kerykeion==4.14.0
+pyswisseph==2.10.3.2
+immanuel==1.4.2
 
 # Eclipse & Advanced Astronomy
-skyfield==1.48                 # Eclipse calculations, high precision
-jplephem==2.21                 # JPL ephemeris data
+skyfield==1.48
+jplephem==2.21
 
 # Date/Time & Geography
-pytz>=2022.7,<2023.0           # Timezone handling
-timezonefinder~=5.2            # immanuel 1.4.2 bunu bekliyor
-geopy==2.4.1                   # Geocoding and location services
-python-dateutil==2.8.2         # Date parsing and manipulation
-fastapi-limiter>=0.1.6         # Rate limit (import: fastapi_limiter)
+pytz>=2022.7,<2023.0
+timezonefinder~=5.2
+geopy==2.4.1
+python-dateutil==2.8.2
+fastapi-limiter>=0.1.6
 
 # Web Framework & API
-fastapi>=0.115,<1.0            # anyio 4.x uyumlu FastAPI
-anyio>=4.5,<5                  # MCP zinciri için gerekli (mcp>=1.12)
-uvicorn[standard]==0.24.0      # ASGI server
+fastapi>=0.115,<1.0
+# anyio, starlette gibi alt bağımlılıkları FastAPI çözecek;
+# ancak MCP için anyio >=4.5 gerekli olduğundan istersen satırı açıkça ekleyebilirsin:
+anyio>=4.5,<5
+uvicorn[standard]==0.24.0
+pydantic==2.8.2
+pydantic-settings>=2.6.1,<2.7
+fastapi-mcp==0.4.0
 
-# Validation & Settings
-pydantic==2.8.2                # Data validation
-pydantic-settings==2.6.1       # Requires pydantic>=2.7
-fastapi-mcp==0.4.0             # MCP server adapter
+# !!! ÖNEMLİ: MCP >=1.12 httpx >= 0.27 istiyor (eski 0.25.2 ile çatışıyordu)
+httpx==0.27.2
 
 # Database & Caching
-redis==5.0.1                   # Caching
-sqlalchemy==2.0.23             # ORM (optional, for report storage)
-alembic==1.13.0                # Database migrations
+redis==5.0.1
+sqlalchemy==2.0.23
+alembic==1.13.0
 
 # Background Tasks
-celery==5.3.4                  # Async task queue (for heavy calculations)
-flower==2.0.1                  # Celery monitoring
+celery==5.3.4
+flower==2.0.1
 
-# HTTP & Requests
-httpx==0.25.2                  # Async HTTP client
-aiohttp==3.9.1                 # Async HTTP
+# Async HTTP (opsiyonel, başka yerlerde kullanıyorsan)
+aiohttp==3.9.1
 
 # Utilities
-python-dotenv==1.0.0           # Environment variables
-loguru==0.7.2                  # Better logging
-tenacity==8.2.3                # Retry logic
+python-dotenv==1.0.0
+loguru==0.7.2
+tenacity==8.2.3
 
 # Data Processing
-pandas==2.1.4                  # Data manipulation (for reports)
-numpy==1.26.2                  # Numerical computations
+pandas==2.1.4
+numpy==1.26.2
 
-# API Documentation / Uploads
-python-multipart==0.0.6        # File uploads support
+# API Documentation
+python-multipart==0.0.6
 
 # Testing
 pytest==7.4.3
@@ -58,14 +60,14 @@ pytest-asyncio==0.21.1
 pytest-cov==4.1.0
 
 # Development
-black==23.12.1                 # Code formatting
-ruff==0.1.8                    # Linting
-mypy==1.7.1                    # Type checking
+black==23.12.1
+ruff==0.1.8
+mypy==1.7.1
 
 # Deployment
-gunicorn==21.2.0               # Production WSGI server
-python-json-logger==2.0.7      # Structured logging
+gunicorn==21.2.0
+python-json-logger==2.0.7
 
 # Monitoring (Optional)
-sentry-sdk[fastapi]==1.39.1    # Error tracking
-prometheus-client==0.19.0      # Metrics
+sentry-sdk[fastapi]==1.39.1
+prometheus-client==0.19.0
