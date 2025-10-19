@@ -7,13 +7,14 @@ import logging
 from contextlib import asynccontextmanager
 from typing import List
 
-from fastapi import FastAPI, Depends, Header, HTTPException, status
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 # MCP
 from fastapi_mcp import FastApiMCP, AuthConfig
 
 from app.utils.rate_limit import init_rate_limiter
+from app.security import verify_bearer  # <<< merkezî güvenlik
 
 # --------- Lifespan ---------
 @asynccontextmanager
@@ -158,18 +159,6 @@ except Exception as e:
     logging.getLogger("uvicorn.error").warning("Electional router DISABLED: %s", e)
 
 # --------- MCP (AI Agent tool'ları) ---------
-# (Opsiyonel) Bearer doğrulaması: MCP_TOKEN set edilirse zorunlu kılınır
-MCP_TOKEN = os.getenv("MCP_TOKEN", "").strip()
-
-def _verify_bearer(authorization: str | None = Header(None)):
-    if not MCP_TOKEN:
-        return  # dev veya korumasız mod
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Bearer token")
-    token = authorization.split(" ", 1)[1]
-    if token != MCP_TOKEN:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
-
 # Sadece hesaplama uçlarını tool olarak aç (health/version gibi uçlar dışarıda kalsın)
 _MCP_INCLUDE_TAGS = [
     "lunar",
@@ -192,7 +181,7 @@ mcp = FastApiMCP(
     include_tags=_MCP_INCLUDE_TAGS,                # yalnızca bu tag'leri tool olarak göster
     describe_all_responses=True,                   # tool açıklamalarına response çeşitlerini dahil et
     describe_full_response_schema=True,            # JSON schema ayrıntılarını ekle
-    auth_config=AuthConfig(dependencies=[Depends(_verify_bearer)]),
+    auth_config=AuthConfig(dependencies=[Depends(verify_bearer)]),  # <<< merkezî doğrulama
 )
 
 # Hem Streamable HTTP hem SSE taşımasını aç
@@ -222,6 +211,4 @@ async def _on_startup():
     else:
         logging.getLogger("engine.bootstrap").info("Rate limiter: DISABLED")
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
-
-    # MCP uçlarını logla
     logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
