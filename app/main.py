@@ -7,8 +7,11 @@ import logging
 from contextlib import asynccontextmanager
 from typing import List
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+
+# MCP
+from fastapi_mcp import FastApiMCP, AuthConfig
 
 from app.utils.rate_limit import init_rate_limiter
 
@@ -56,9 +59,14 @@ async def access_logger(request, call_next):
     dt = (time.time() - t0) * 1000.0
     client = getattr(request, "client", None)
     client_host = client.host if client else "-"
-    logger.info("%s %s %s %d %.2fms",
-                client_host, request.method, request.url.path,
-                getattr(response, "status_code", 200), dt)
+    logger.info(
+        "%s %s %s %d %.2fms",
+        client_host,
+        request.method,
+        request.url.path,
+        getattr(response, "status_code", 200),
+        dt,
+    )
     return response
 
 # --------- Sağlık ucu mutlaka mevcut olsun ---------
@@ -149,6 +157,48 @@ try:
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Electional router DISABLED: %s", e)
 
+# --------- MCP (AI Agent tool'ları) ---------
+# (Opsiyonel) Bearer doğrulaması: MCP_TOKEN set edilirse zorunlu kılınır
+MCP_TOKEN = os.getenv("MCP_TOKEN", "").strip()
+
+def _verify_bearer(authorization: str | None = Header(None)):
+    if not MCP_TOKEN:
+        return  # dev veya korumasız mod
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Bearer token")
+    token = authorization.split(" ", 1)[1]
+    if token != MCP_TOKEN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
+
+# Sadece hesaplama uçlarını tool olarak aç (health/version gibi uçlar dışarıda kalsın)
+_MCP_INCLUDE_TAGS = [
+    "lunar",
+    "eclipses",
+    "synastry",
+    "composite",
+    "returns",
+    "profections",
+    "retrogrades",
+    "progressions",
+    "transits",
+    "natal",
+    "electional",
+]
+
+mcp = FastApiMCP(
+    app,
+    name="AstroCalc Engine MCP",
+    description="AstroCalc hesaplama motoru için MCP tool seti",
+    include_tags=_MCP_INCLUDE_TAGS,                # yalnızca bu tag'leri tool olarak göster
+    describe_all_responses=True,                   # tool açıklamalarına response çeşitlerini dahil et
+    describe_full_response_schema=True,            # JSON schema ayrıntılarını ekle
+    auth_config=AuthConfig(dependencies=[Depends(_verify_bearer)]),
+)
+
+# Hem Streamable HTTP hem SSE taşımasını aç
+mcp.mount_http()   # -> /mcp
+mcp.mount_sse()    # -> /sse
+
 # --------- /version (build bilgisi + route listesi) ---------
 ENGINE_VERSION = os.getenv("ENGINE_VERSION", "dev")
 GIT_SHA = os.getenv("GIT_SHA", "unknown")
@@ -172,3 +222,6 @@ async def _on_startup():
     else:
         logging.getLogger("engine.bootstrap").info("Rate limiter: DISABLED")
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
+
+    # MCP uçlarını logla
+    logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
