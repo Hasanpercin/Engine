@@ -12,6 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 # pip/setuptools/wheel upgrade -> dependency resolver hız/kare
 RUN python -m pip install --upgrade pip setuptools wheel
 
+RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt && \
+    python -c "import pkgutil, sys; print('--- BUILDER FREEZE ---'); import subprocess; subprocess.run([sys.executable,'-m','pip','freeze'])"
+
 # bağımlılıklar
 COPY requirements.txt .
 # Not: requirements.txt içinde pydantic-settings>=2.5.2 ve fastapi-mcp==0.4.0 olmalı (çatışmayı çözmek için)
