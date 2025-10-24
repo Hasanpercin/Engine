@@ -4,11 +4,13 @@ from __future__ import annotations
 import os
 import time
 import logging
+import json
 from contextlib import asynccontextmanager
 from typing import List
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # MCP
 from fastapi_mcp import FastApiMCP, AuthConfig
@@ -69,6 +71,71 @@ async def access_logger(request, call_next):
         dt,
     )
     return response
+
+# --------- MCP SessionId Injection Middleware ---------
+class SessionIdInjectionMiddleware(BaseHTTPMiddleware):
+    """
+    X-Session-ID header'ından sessionId'yi okur ve MCP request body'sine ekler.
+    
+    n8n gibi client'lar sessionId'yi header'da gönderdiğinde,
+    bu middleware otomatik olarak params.sessionId'ye ekler.
+    
+    Örnek:
+        Header: X-Session-ID: abc123
+        Body (önce): {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "natal_basic", "arguments": {...}}}
+        Body (sonra): {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "natal_basic", "arguments": {...}, "sessionId": "abc123"}}
+    """
+    async def dispatch(self, request: Request, call_next):
+        # Sadece MCP endpoint'leri için çalışsın
+        if request.url.path in ["/mcp", "/sse"] and request.method == "POST":
+            # Header'dan sessionId oku (case-insensitive)
+            session_id = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
+            
+            if session_id:
+                # Body'yi oku
+                body = await request.body()
+                
+                if body:
+                    try:
+                        # JSON parse et
+                        body_json = json.loads(body.decode('utf-8'))
+                        
+                        # Eğer params varsa ve sessionId yoksa ekle
+                        if "params" in body_json and isinstance(body_json["params"], dict):
+                            if "sessionId" not in body_json["params"]:
+                                body_json["params"]["sessionId"] = session_id
+                                
+                                # Log injection for debugging
+                                logging.getLogger("engine.mcp").debug(
+                                    "Injected sessionId=%s into params for method=%s",
+                                    session_id,
+                                    body_json.get("method", "unknown")
+                                )
+                                
+                                # Güncellenmiş body'yi request'e geri yaz
+                                new_body = json.dumps(body_json).encode('utf-8')
+                                
+                                # Request body'sini değiştirmek için custom _receive oluştur
+                                async def _receive():
+                                    return {"type": "http.request", "body": new_body}
+                                
+                                request._receive = _receive
+                    except json.JSONDecodeError as e:
+                        # JSON parse hatası durumunda log ve devam et
+                        logging.getLogger("engine.mcp").warning(
+                            "SessionId injection failed: Invalid JSON in body: %s", e
+                        )
+                    except Exception as e:
+                        # Diğer hatalar için genel log
+                        logging.getLogger("engine.mcp").warning(
+                            "SessionId injection failed: %s", e
+                        )
+        
+        response = await call_next(request)
+        return response
+
+# Middleware'i ekle (MCP mount'tan ÖNCE!)
+app.add_middleware(SessionIdInjectionMiddleware)
 
 # --------- Sağlık ucu mutlaka mevcut olsun ---------
 try:
@@ -212,3 +279,4 @@ async def _on_startup():
         logging.getLogger("engine.bootstrap").info("Rate limiter: DISABLED")
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
     logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
+    logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED")
