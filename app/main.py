@@ -11,6 +11,7 @@ from typing import List
 from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import Headers
 
 # MCP
 from fastapi_mcp import FastApiMCP, AuthConfig
@@ -92,13 +93,13 @@ class SessionIdInjectionMiddleware(BaseHTTPMiddleware):
             session_id = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
             
             if session_id:
-                # Body'yi oku
-                body = await request.body()
-                
-                if body:
-                    try:
+                try:
+                    # Body'yi oku
+                    body_bytes = await request.body()
+                    
+                    if body_bytes:
                         # JSON parse et
-                        body_json = json.loads(body.decode('utf-8'))
+                        body_json = json.loads(body_bytes.decode('utf-8'))
                         
                         # Eğer params varsa ve sessionId yoksa ekle
                         if "params" in body_json and isinstance(body_json["params"], dict):
@@ -111,25 +112,27 @@ class SessionIdInjectionMiddleware(BaseHTTPMiddleware):
                                     session_id,
                                     body_json.get("method", "unknown")
                                 )
-                                
-                                # Güncellenmiş body'yi request'e geri yaz
-                                new_body = json.dumps(body_json).encode('utf-8')
-                                
-                                # Request body'sini değiştirmek için custom _receive oluştur
-                                async def _receive():
-                                    return {"type": "http.request", "body": new_body}
-                                
-                                request._receive = _receive
-                    except json.JSONDecodeError as e:
-                        # JSON parse hatası durumunda log ve devam et
-                        logging.getLogger("engine.mcp").warning(
-                            "SessionId injection failed: Invalid JSON in body: %s", e
-                        )
-                    except Exception as e:
-                        # Diğer hatalar için genel log
-                        logging.getLogger("engine.mcp").warning(
-                            "SessionId injection failed: %s", e
-                        )
+                        
+                        # Güncellenmiş body'yi JSON'a çevir
+                        new_body = json.dumps(body_json).encode('utf-8')
+                        
+                        # Request'i yeni body ile yeniden oluştur
+                        async def receive():
+                            return {"type": "http.request", "body": new_body, "more_body": False}
+                        
+                        # Request'in _receive metodunu override et
+                        request._receive = receive
+                        
+                except json.JSONDecodeError as e:
+                    # JSON parse hatası durumunda log ve devam et
+                    logging.getLogger("engine.mcp").warning(
+                        "SessionId injection failed: Invalid JSON in body: %s", str(e)
+                    )
+                except Exception as e:
+                    # Diğer hatalar için genel log
+                    logging.getLogger("engine.mcp").error(
+                        "SessionId injection failed: %s", str(e), exc_info=True
+                    )
         
         response = await call_next(request)
         return response
