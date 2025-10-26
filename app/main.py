@@ -4,13 +4,11 @@ from __future__ import annotations
 import os
 import time
 import logging
-import json
 from contextlib import asynccontextmanager
 from typing import List
 
 from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from fastapi_mcp import FastApiMCP, AuthConfig
 
@@ -45,30 +43,6 @@ if _cors_origins_env:
             allow_headers=["*"],
             max_age=86400,
         )
-
-class SessionIdLoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        logger = logging.getLogger("uvicorn.error")
-        
-        if request.url.path in ["/mcp", "/sse"] and request.method in ["POST", "GET"]:
-            session_id = None
-            
-            session_id = request.query_params.get("sessionId")
-            if session_id:
-                logger.info("SessionId [query]: %s on %s %s", session_id, request.method, request.url.path)
-            
-            if not session_id:
-                session_id = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
-                if session_id:
-                    logger.info("SessionId [header]: %s on %s %s", session_id, request.method, request.url.path)
-            
-            if not session_id:
-                logger.warning("No sessionId found on %s %s", request.method, request.url.path)
-        
-        response = await call_next(request)
-        return response
-
-app.add_middleware(SessionIdLoggingMiddleware)
 
 try:
     from app.api.routers import health
@@ -194,4 +168,3 @@ async def _on_startup():
     
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
     logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
-    logging.getLogger("engine.bootstrap").info("SessionId tracking: query param + header")
