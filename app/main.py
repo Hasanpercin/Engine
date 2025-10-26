@@ -9,7 +9,6 @@ from typing import List
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware import Middleware
 
 # MCP
 from fastapi_mcp import FastApiMCP, AuthConfig
@@ -34,9 +33,6 @@ app = FastAPI(
     redoc_url="/redoc" if _openapi_enabled else None,
     openapi_url="/openapi.json" if _openapi_enabled else None,
     lifespan=lifespan,
-    middleware=[
-        Middleware(SessionIdInjectionMiddleware),  # ASGI middleware - doğru yöntem
-    ],
 )
 
 # --------- CORS ---------
@@ -160,6 +156,10 @@ try:
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Electional router DISABLED: %s", e)
 
+# --------- MCP SessionId Injection - ASGI Wrap (MCP mount'tan ÖNCE) ---------
+# ASGI app'i wrap et - bu MCP'den ÖNCE olmalı ki MCP endpoint'leri de wrap edilsin
+app = SessionIdInjectionMiddleware(app)
+
 # --------- MCP (AI Agent tool'ları) ---------
 _MCP_INCLUDE_TAGS = [
     "lunar",
@@ -214,4 +214,4 @@ async def _on_startup():
     
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
     logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
-    logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED")
+    logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED (ASGI wrapped)")
