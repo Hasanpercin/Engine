@@ -1,35 +1,20 @@
-# app/middleware/session_injection.py
-
-import json
-import logging
-from starlette.types import ASGIApp, Receive, Scope, Send
-
-logger = logging.getLogger("engine.mcp")
-
-
+# --------- MCP SessionId Injection Middleware (ASGI Version - %100 Garantili) ---------
 class SessionIdInjectionMiddleware:
     """
-    ASGI middleware that injects X-Session-ID header value into MCP params.sessionId
-    
-    Usage:
-        app.add_middleware(SessionIdInjectionMiddleware)
-    
-    Example:
-        Request Header: X-Session-ID: abc123
-        Request Body (before): {"jsonrpc": "2.0", "method": "tools/call", "params": {...}}
-        Request Body (after): {"jsonrpc": "2.0", "method": "tools/call", "params": {..., "sessionId": "abc123"}}
+    ASGI middleware - Body'yi düzgün şekilde handle eder.
+    BaseHTTPMiddleware'den daha low-level ama daha güvenilir.
     """
-    
-    def __init__(self, app: ASGIApp):
+    def __init__(self, app):
         self.app = app
-    
-    async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        # Only process HTTP requests
+        self.logger = logging.getLogger("engine.mcp")
+
+    async def __call__(self, scope, receive, send):
+        # Sadece HTTP POST isteklerini işle
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
         
-        # Only process POST requests to MCP endpoints
+        # Path kontrolü
         path = scope.get("path", "")
         method = scope.get("method", "")
         
@@ -37,69 +22,55 @@ class SessionIdInjectionMiddleware:
             await self.app(scope, receive, send)
             return
         
-        # Extract X-Session-ID header (case-insensitive)
+        # Header'dan sessionId bul
         session_id = None
         for header_name, header_value in scope.get("headers", []):
             if header_name.lower() == b"x-session-id":
-                session_id = header_value.decode("utf-8")
+                session_id = header_value.decode('utf-8')
                 break
         
-        # No session ID in header, pass through unchanged
         if not session_id:
+            # SessionId yoksa normal devam et
             await self.app(scope, receive, send)
             return
         
-        # Collect body chunks
+        # Body'yi topla
         body_parts = []
         
         async def wrapped_receive():
             message = await receive()
-            
             if message["type"] == "http.request":
-                body = message.get("body", b"")
-                if body:
-                    body_parts.append(body)
+                body_parts.append(message.get("body", b""))
                 
-                # Last chunk - process the complete body
+                # Son parça mı?
                 if not message.get("more_body", False):
+                    # Tüm body toplandı, işle
                     full_body = b"".join(body_parts)
                     
                     try:
-                        # Parse JSON
-                        body_json = json.loads(full_body.decode("utf-8"))
+                        body_json = json.loads(full_body.decode('utf-8'))
                         
-                        # Inject sessionId into params if not already present
+                        # SessionId injection
                         if "params" in body_json and isinstance(body_json["params"], dict):
                             if "sessionId" not in body_json["params"]:
                                 body_json["params"]["sessionId"] = session_id
-                                
-                                logger.info(
+                                self.logger.info(
                                     "✓ SessionId injected: %s for method=%s",
                                     session_id,
                                     body_json.get("method", "unknown")
                                 )
                         
-                        # Encode modified body
-                        modified_body = json.dumps(body_json).encode("utf-8")
-                        
+                        # Modified body'yi döndür
+                        modified_body = json.dumps(body_json).encode('utf-8')
                         return {
                             "type": "http.request",
                             "body": modified_body,
                             "more_body": False,
                         }
                     
-                    except json.JSONDecodeError as e:
-                        logger.warning("SessionId injection skipped: Invalid JSON - %s", str(e))
-                        # Return original body on JSON error
-                        return {
-                            "type": "http.request",
-                            "body": full_body,
-                            "more_body": False,
-                        }
-                    
                     except Exception as e:
-                        logger.error("SessionId injection error: %s", str(e), exc_info=True)
-                        # Return original body on any error
+                        self.logger.error("SessionId injection failed: %s", e, exc_info=True)
+                        # Hata durumunda orijinal body'yi dön
                         return {
                             "type": "http.request",
                             "body": full_body,
@@ -110,5 +81,8 @@ class SessionIdInjectionMiddleware:
             
             return message
         
-        # Pass modified receive to the app
         await self.app(scope, wrapped_receive, send)
+
+
+# Middleware'i ekle (BaseHTTPMiddleware YERINE bunu kullan)
+app.add_middleware(SessionIdInjectionMiddleware)
