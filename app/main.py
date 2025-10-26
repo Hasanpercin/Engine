@@ -10,6 +10,7 @@ from typing import List
 
 from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # MCP
 from fastapi_mcp import FastApiMCP, AuthConfig
@@ -49,93 +50,72 @@ if _cors_origins_env:
             max_age=86400,
         )
 
-# --------- Access log middleware ---------
-logger = logging.getLogger("engine.access")
-
-@app.middleware("http")
-async def access_logger(request, call_next):
-    t0 = time.time()
-    response = await call_next(request)
-    dt = (time.time() - t0) * 1000.0
-    client = getattr(request, "client", None)
-    client_host = client.host if client else "-"
-    logger.info(
-        "%s %s %s %d %.2fms",
-        client_host,
-        request.method,
-        request.url.path,
-        getattr(response, "status_code", 200),
-        dt,
-    )
-    return response
-
 # --------- MCP SessionId Injection Middleware ---------
-@app.middleware("http")
-async def mcp_session_id_injector(request: Request, call_next):
+class SessionIdInjectionMiddleware(BaseHTTPMiddleware):
     """
     X-Session-ID header'ından sessionId'yi okur ve MCP request body'sine ekler.
-    
-    Bu middleware sadece /mcp ve /sse endpoint'leri için çalışır ve
-    n8n gibi client'ların sessionId'yi header'da göndermesine izin verir.
     """
-    # HER İSTEĞİ LOGLA - Debug için
-    logger.info("🚀 MIDDLEWARE TRIGGERED: path=%s, method=%s", request.url.path, request.method)
-    
-    # Sadece MCP endpoint'leri için çalış
-    if request.url.path in ["/mcp", "/sse"] and request.method == "POST":
-        # Header'dan sessionId oku
-        session_id = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
+    async def dispatch(self, request: Request, call_next):
+        # Uvicorn logger kullan - bu kesinlikle çalışır
+        logger = logging.getLogger("uvicorn.error")
         
-        logger.info("🔍 MCP request intercepted: session_id=%s", session_id)
+        # HER İSTEĞİ LOGLA - Debug için
+        logger.info("🚀 MIDDLEWARE: %s %s", request.method, request.url.path)
         
-        if session_id:
-            try:
-                # Body'yi oku
-                body_bytes = await request.body()
-                
-                logger.info("📦 Original body: %s", body_bytes[:200])
-                
-                if body_bytes:
-                    # JSON parse et
-                    body_json = json.loads(body_bytes.decode('utf-8'))
+        # Sadece MCP endpoint'leri için session injection
+        if request.url.path in ["/mcp", "/sse"] and request.method == "POST":
+            session_id = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
+            
+            logger.info("🔍 MCP endpoint hit, sessionId=%s", session_id)
+            
+            if session_id:
+                try:
+                    # Body'yi oku
+                    body_bytes = await request.body()
                     
-                    # params yoksa oluştur
-                    if "params" not in body_json:
-                        body_json["params"] = {}
+                    logger.info("📦 Body length: %d bytes", len(body_bytes))
                     
-                    # SessionId injection
-                    if isinstance(body_json["params"], dict):
-                        if "sessionId" not in body_json["params"]:
-                            body_json["params"]["sessionId"] = session_id
-                            logger.info("✅ SessionId INJECTED: %s", session_id)
-                        else:
-                            logger.info("ℹ️ SessionId already exists")
-                    
-                    # Modified body'yi encode et
-                    modified_body = json.dumps(body_json).encode('utf-8')
-                    
-                    logger.info("📦 Modified body: %s", modified_body[:200])
-                    
-                    # Request'in receive fonksiyonunu override et
-                    async def modified_receive():
-                        return {
-                            "type": "http.request",
-                            "body": modified_body,
-                            "more_body": False,
-                        }
-                    
-                    request._receive = modified_receive
-                    
-            except json.JSONDecodeError as e:
-                logger.warning("⚠️ JSON decode error: %s", e)
-            except Exception as e:
-                logger.error("❌ SessionId injection failed: %s", e, exc_info=True)
-        else:
-            logger.warning("⚠️ No X-Session-ID header found")
-    
-    # İşlemi devam ettir
-    response = await call_next(request)
-    return response
+                    if body_bytes:
+                        # JSON parse
+                        body_json = json.loads(body_bytes.decode('utf-8'))
+                        
+                        # params ekle
+                        if "params" not in body_json:
+                            body_json["params"] = {}
+                        
+                        # SessionId inject
+                        if isinstance(body_json["params"], dict):
+                            if "sessionId" not in body_json["params"]:
+                                body_json["params"]["sessionId"] = session_id
+                                logger.info("✅ SessionId INJECTED: %s", session_id)
+                            else:
+                                logger.info("ℹ️ SessionId already exists")
+                        
+                        # Modified body
+                        modified_body = json.dumps(body_json).encode('utf-8')
+                        
+                        # Request receive override
+                        async def modified_receive():
+                            return {
+                                "type": "http.request",
+                                "body": modified_body,
+                                "more_body": False,
+                            }
+                        
+                        request._receive = modified_receive
+                        logger.info("📦 Body modified successfully")
+                        
+                except Exception as e:
+                    logger.error("❌ Injection error: %s", e, exc_info=True)
+            else:
+                logger.warning("⚠️ No X-Session-ID header")
+        
+        # Call next middleware
+        response = await call_next(request)
+        return response
+
+# Middleware'i ekle - CORS'tan sonra, router'lardan önce
+app.add_middleware(SessionIdInjectionMiddleware)
 
 # --------- Sağlık ucu ---------
 try:
@@ -278,4 +258,4 @@ async def _on_startup():
     
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
     logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
-    logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED (inline HTTP middleware)")
+    logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED (BaseHTTPMiddleware)")
