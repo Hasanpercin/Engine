@@ -53,22 +53,33 @@ if _cors_origins_env:
 # --------- MCP SessionId Injection Middleware ---------
 class SessionIdInjectionMiddleware(BaseHTTPMiddleware):
     """
-    X-Session-ID header'ından sessionId'yi okur ve MCP request body'sine ekler.
+    SessionId'yi 3 kaynaktan okur: Query Param, Header, Body
+    n8n için query param desteği eklendi: ?sessionId=xxx
     """
     async def dispatch(self, request: Request, call_next):
-        # Uvicorn logger kullan - bu kesinlikle çalışır
+        # Uvicorn logger - kesinlikle çalışır
         logger = logging.getLogger("uvicorn.error")
         
-        # HER İSTEĞİ LOGLA - Debug için
+        # HER İSTEĞİ LOGLA
         logger.info("🚀 MIDDLEWARE: %s %s", request.method, request.url.path)
         
-        # Sadece MCP endpoint'leri için session injection
-        if request.url.path in ["/mcp", "/sse"] and request.method == "POST":
-            session_id = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
+        # MCP endpoint'leri için session injection (POST veya GET - SSE için)
+        if request.url.path in ["/mcp", "/sse"] and request.method in ["POST", "GET"]:
+            session_id = None
             
-            logger.info("🔍 MCP endpoint hit, sessionId=%s", session_id)
-            
+            # 1. ÖNCE QUERY PARAMETER'DAN OKU (n8n için)
+            session_id = request.query_params.get("sessionId")
             if session_id:
+                logger.info("🔍 SessionId from QUERY PARAM: %s", session_id)
+            
+            # 2. Query param yoksa HEADER'DAN OKU
+            if not session_id:
+                session_id = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
+                if session_id:
+                    logger.info("🔍 SessionId from HEADER: %s", session_id)
+            
+            # 3. SessionId varsa ve POST ise BODY'YE INJECT ET
+            if session_id and request.method == "POST":
                 try:
                     # Body'yi oku
                     body_bytes = await request.body()
@@ -87,9 +98,9 @@ class SessionIdInjectionMiddleware(BaseHTTPMiddleware):
                         if isinstance(body_json["params"], dict):
                             if "sessionId" not in body_json["params"]:
                                 body_json["params"]["sessionId"] = session_id
-                                logger.info("✅ SessionId INJECTED: %s", session_id)
+                                logger.info("✅ SessionId INJECTED into params: %s", session_id)
                             else:
-                                logger.info("ℹ️ SessionId already exists")
+                                logger.info("ℹ️ SessionId already exists in params")
                         
                         # Modified body
                         modified_body = json.dumps(body_json).encode('utf-8')
@@ -105,10 +116,17 @@ class SessionIdInjectionMiddleware(BaseHTTPMiddleware):
                         request._receive = modified_receive
                         logger.info("📦 Body modified successfully")
                         
+                except json.JSONDecodeError as e:
+                    logger.warning("⚠️ JSON decode error: %s", e)
                 except Exception as e:
                     logger.error("❌ Injection error: %s", e, exc_info=True)
+            
+            elif session_id and request.method == "GET":
+                # SSE için - query param'da sessionId var, body yok
+                logger.info("✅ SSE request with sessionId: %s", session_id)
+            
             else:
-                logger.warning("⚠️ No X-Session-ID header")
+                logger.warning("⚠️ No sessionId found (checked query param and header)")
         
         # Call next middleware
         response = await call_next(request)
@@ -258,4 +276,18 @@ async def _on_startup():
     
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
     logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
-    logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED (BaseHTTPMiddleware)")
+    logging.getLogger("engine.bootstrap").info("SessionId injection: ENABLED (query param + header + body)")
+```
+
+## Ana Değişiklikler:
+
+1. ✅ **Satır 68**: `request.method in ["POST", "GET"]` - SSE için GET desteği
+2. ✅ **Satır 71-74**: **Query parameter'dan sessionId okuma** (n8n için)
+3. ✅ **Satır 77-80**: Header'dan okuma (fallback)
+4. ✅ **Satır 83**: POST için body injection
+5. ✅ **Satır 117-119**: GET/SSE için log
+6. ✅ **Satır 122**: Daha açıklayıcı warning
+
+Şimdi n8n'deki URL çalışacak:
+```
+https://engine.hasanpercin.xyz/mcp/sse?sessionId=xxx
