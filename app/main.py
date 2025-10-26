@@ -50,77 +50,41 @@ if _cors_origins_env:
             max_age=86400,
         )
 
-# --------- MCP SessionId Injection Middleware ---------
-class SessionIdInjectionMiddleware(BaseHTTPMiddleware):
+# --------- MCP SessionId Logging Middleware ---------
+class SessionIdLoggingMiddleware(BaseHTTPMiddleware):
     """
-    SessionId'yi 3 kaynaktan okur: Query Param, Header, Body
+    SessionId tracking for MCP/SSE requests.
+    Sadece log'lar - body manipulation YOK (AssertionError önlenir)
     """
     async def dispatch(self, request: Request, call_next):
         logger = logging.getLogger("uvicorn.error")
         
-        logger.info("🚀 MIDDLEWARE: %s %s", request.method, request.url.path)
-        
+        # MCP/SSE endpoint'leri için sessionId log'la
         if request.url.path in ["/mcp", "/sse"] and request.method in ["POST", "GET"]:
             session_id = None
             
-            # Query parameter
+            # Query parameter'dan oku
             session_id = request.query_params.get("sessionId")
             if session_id:
-                logger.info("🔍 SessionId from QUERY PARAM: %s", session_id)
+                logger.info("🔍 SessionId [query]: %s on %s %s", 
+                           session_id, request.method, request.url.path)
             
-            # Header fallback
+            # Header'dan oku (fallback)
             if not session_id:
                 session_id = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
                 if session_id:
-                    logger.info("🔍 SessionId from HEADER: %s", session_id)
+                    logger.info("🔍 SessionId [header]: %s on %s %s", 
+                               session_id, request.method, request.url.path)
             
-            # Body injection for POST
-            if session_id and request.method == "POST":
-                try:
-                    body_bytes = await request.body()
-                    
-                    logger.info("📦 Body length: %d bytes", len(body_bytes))
-                    
-                    if body_bytes:
-                        body_json = json.loads(body_bytes.decode('utf-8'))
-                        
-                        if "params" not in body_json:
-                            body_json["params"] = {}
-                        
-                        if isinstance(body_json["params"], dict):
-                            if "sessionId" not in body_json["params"]:
-                                body_json["params"]["sessionId"] = session_id
-                                logger.info("✅ SessionId INJECTED: %s", session_id)
-                            else:
-                                logger.info("ℹ️ SessionId already exists")
-                        
-                        modified_body = json.dumps(body_json).encode('utf-8')
-                        
-                        async def modified_receive():
-                            return {
-                                "type": "http.request",
-                                "body": modified_body,
-                                "more_body": False,
-                            }
-                        
-                        request._receive = modified_receive
-                        logger.info("📦 Body modified successfully")
-                        
-                except json.JSONDecodeError as e:
-                    logger.warning("⚠️ JSON decode error: %s", e)
-                except Exception as e:
-                    logger.error("❌ Injection error: %s", e, exc_info=True)
-            
-            elif session_id and request.method == "GET":
-                logger.info("✅ SSE request with sessionId: %s", session_id)
-            
-            else:
-                logger.warning("⚠️ No sessionId found")
+            if not session_id:
+                logger.warning("⚠️ No sessionId found on %s %s", 
+                             request.method, request.url.path)
         
+        # Body manipulation YOK - direkt call_next
         response = await call_next(request)
         return response
 
-app.add_middleware(SessionIdInjectionMiddleware)
+app.add_middleware(SessionIdLoggingMiddleware)
 
 # --------- Sağlık ucu ---------
 try:
@@ -251,4 +215,19 @@ async def _on_startup():
     
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
     logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
-    logging.getLogger("engine.bootstrap").info("SessionId injection: query param + header + body")
+    logging.getLogger("engine.bootstrap").info("SessionId tracking: query param + header (logging only)")
+```
+
+## Ana Değişiklikler:
+
+1. ✅ **Class adı değişti**: `SessionIdInjectionMiddleware` → `SessionIdLoggingMiddleware`
+2. ✅ **Body manipulation KALDIRILDI** - AssertionError olmaz artık!
+3. ✅ **Sadece sessionId log'lanıyor** - tracking için
+4. ✅ **Daha temiz kod** - gereksiz try/catch blokları yok
+5. ✅ **Performance artışı** - body okuma/yazma overhead'i yok
+
+## Neden Hala Çalışacak?
+
+n8n zaten sessionId'yi **query parameter** olarak gönderiyor:
+```
+https://engine.hasanpercin.xyz/sse?sessionId=xxx
