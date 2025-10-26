@@ -9,6 +9,7 @@ from typing import List
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware import Middleware
 
 # MCP
 from fastapi_mcp import FastApiMCP, AuthConfig
@@ -33,6 +34,9 @@ app = FastAPI(
     redoc_url="/redoc" if _openapi_enabled else None,
     openapi_url="/openapi.json" if _openapi_enabled else None,
     lifespan=lifespan,
+    middleware=[
+        Middleware(SessionIdInjectionMiddleware),  # ASGI middleware - doğru yöntem
+    ],
 )
 
 # --------- CORS ---------
@@ -68,10 +72,6 @@ async def access_logger(request, call_next):
         dt,
     )
     return response
-
-# --------- MCP SessionId Injection Middleware ---------
-# Middleware'i ekle (CORS ve access logger'dan SONRA, MCP mount'tan ÖNCE)
-app.add_middleware(SessionIdInjectionMiddleware)
 
 # --------- Sağlık ucu ---------
 try:
