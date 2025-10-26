@@ -6,9 +6,6 @@ import logging
 class SessionIdInjectionMiddleware:
     """
     ASGI middleware - X-Session-ID header'ından sessionId'yi okur ve MCP request body'sine ekler.
-    
-    Bu middleware, n8n gibi client'ların sessionId'yi header'da göndermesine izin verir,
-    ve otomatik olarak MCP params'a ekler.
     """
     def __init__(self, app):
         self.app = app
@@ -24,19 +21,31 @@ class SessionIdInjectionMiddleware:
         path = scope.get("path", "")
         method = scope.get("method", "")
         
+        # DEBUG: Her /mcp isteğini logla
+        if path in ["/mcp", "/sse"]:
+            self.logger.info("🔍 Middleware triggered: path=%s, method=%s", path, method)
+        
         if path not in ["/mcp", "/sse"] or method != "POST":
             await self.app(scope, receive, send)
             return
         
         # Header'dan sessionId bul
         session_id = None
-        for header_name, header_value in scope.get("headers", []):
+        headers = scope.get("headers", [])
+        
+        # DEBUG: Tüm header'ları logla
+        self.logger.info("📋 Headers received: %s", 
+                        [(h[0].decode(), h[1].decode()) for h in headers if h[0].lower() == b"x-session-id"])
+        
+        for header_name, header_value in headers:
             if header_name.lower() == b"x-session-id":
                 session_id = header_value.decode('utf-8')
+                self.logger.info("✓ Found X-Session-ID header: %s", session_id)
                 break
         
         if not session_id:
-            # SessionId yoksa normal devam et
+            # SessionId yoksa uyar
+            self.logger.warning("⚠️ No X-Session-ID header found, skipping injection")
             await self.app(scope, receive, send)
             return
         
@@ -53,6 +62,9 @@ class SessionIdInjectionMiddleware:
                     # Tüm body toplandı, işle
                     full_body = b"".join(body_parts)
                     
+                    # DEBUG: Body'yi logla
+                    self.logger.info("📦 Original body: %s", full_body[:200])  # İlk 200 char
+                    
                     try:
                         body_json = json.loads(full_body.decode('utf-8'))
                         
@@ -61,13 +73,21 @@ class SessionIdInjectionMiddleware:
                             if "sessionId" not in body_json["params"]:
                                 body_json["params"]["sessionId"] = session_id
                                 self.logger.info(
-                                    "✓ SessionId injected: %s for method=%s",
+                                    "✅ SessionId injected: %s for method=%s",
                                     session_id,
                                     body_json.get("method", "unknown")
                                 )
+                            else:
+                                self.logger.info("ℹ️ SessionId already exists in params, not injecting")
+                        else:
+                            self.logger.warning("⚠️ No params dict found in body, cannot inject")
                         
                         # Modified body'yi döndür
                         modified_body = json.dumps(body_json).encode('utf-8')
+                        
+                        # DEBUG: Modified body'yi logla
+                        self.logger.info("📦 Modified body: %s", modified_body[:200])
+                        
                         return {
                             "type": "http.request",
                             "body": modified_body,
@@ -75,7 +95,7 @@ class SessionIdInjectionMiddleware:
                         }
                     
                     except Exception as e:
-                        self.logger.error("SessionId injection failed: %s", e, exc_info=True)
+                        self.logger.error("❌ SessionId injection failed: %s", e, exc_info=True)
                         # Hata durumunda orijinal body'yi dön
                         return {
                             "type": "http.request",
@@ -88,6 +108,3 @@ class SessionIdInjectionMiddleware:
             return message
         
         await self.app(scope, wrapped_receive, send)
-
-# BURADAN SONRA HİÇBİR ŞEY OLMAMALI!
-# app.add_middleware() çağrısı main.py'de yapılıyor
