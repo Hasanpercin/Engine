@@ -79,19 +79,22 @@ async def mcp_session_id_injector(request: Request, call_next):
     Bu middleware sadece /mcp ve /sse endpoint'leri için çalışır ve
     n8n gibi client'ların sessionId'yi header'da göndermesine izin verir.
     """
+    # HER İSTEĞİ LOGLA - Debug için
+    mcp_logger.info("🚀 MIDDLEWARE TRIGGERED: path=%s, method=%s", request.url.path, request.method)
+    
     # Sadece MCP endpoint'leri için çalış
     if request.url.path in ["/mcp", "/sse"] and request.method == "POST":
         # Header'dan sessionId oku
         session_id = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
         
-        mcp_logger.info("🔍 MCP request intercepted: path=%s, session_id=%s", request.url.path, session_id)
+        mcp_logger.info("🔍 MCP request intercepted: session_id=%s", session_id)
         
         if session_id:
             try:
                 # Body'yi oku
                 body_bytes = await request.body()
                 
-                mcp_logger.info("📦 Original body length: %d bytes", len(body_bytes))
+                mcp_logger.info("📦 Original body: %s", body_bytes[:200])
                 
                 if body_bytes:
                     # JSON parse et
@@ -105,21 +108,16 @@ async def mcp_session_id_injector(request: Request, call_next):
                     if isinstance(body_json["params"], dict):
                         if "sessionId" not in body_json["params"]:
                             body_json["params"]["sessionId"] = session_id
-                            mcp_logger.info(
-                                "✅ SessionId INJECTED: %s for method=%s",
-                                session_id,
-                                body_json.get("method", "unknown")
-                            )
+                            mcp_logger.info("✅ SessionId INJECTED: %s", session_id)
                         else:
-                            mcp_logger.info("ℹ️ SessionId already exists in params")
+                            mcp_logger.info("ℹ️ SessionId already exists")
                     
                     # Modified body'yi encode et
                     modified_body = json.dumps(body_json).encode('utf-8')
                     
-                    mcp_logger.info("📦 Modified body length: %d bytes", len(modified_body))
+                    mcp_logger.info("📦 Modified body: %s", modified_body[:200])
                     
                     # Request'in receive fonksiyonunu override et
-                    # Bu çok kritik - body'nin tekrar okunabilmesi için gerekli
                     async def modified_receive():
                         return {
                             "type": "http.request",
@@ -127,7 +125,6 @@ async def mcp_session_id_injector(request: Request, call_next):
                             "more_body": False,
                         }
                     
-                    # Request'in _receive metodunu değiştir
                     request._receive = modified_receive
                     
             except json.JSONDecodeError as e:
@@ -135,7 +132,7 @@ async def mcp_session_id_injector(request: Request, call_next):
             except Exception as e:
                 mcp_logger.error("❌ SessionId injection failed: %s", e, exc_info=True)
         else:
-            mcp_logger.info("ℹ️ No X-Session-ID header found in request")
+            mcp_logger.warning("⚠️ No X-Session-ID header found")
     
     # İşlemi devam ettir
     response = await call_next(request)
