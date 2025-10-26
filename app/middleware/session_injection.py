@@ -1,8 +1,14 @@
-# --------- MCP SessionId Injection Middleware (ASGI Version - %100 Garantili) ---------
+# app/middleware/session_injection.py
+import json
+import logging
+
+
 class SessionIdInjectionMiddleware:
     """
-    ASGI middleware - Body'yi düzgün şekilde handle eder.
-    BaseHTTPMiddleware'den daha low-level ama daha güvenilir.
+    ASGI middleware - X-Session-ID header'ından sessionId'yi okur ve MCP request body'sine ekler.
+    
+    Bu middleware, n8n gibi client'ların sessionId'yi header'da göndermesine izin verir,
+    ve otomatik olarak MCP params'a ekler.
     """
     def __init__(self, app):
         self.app = app
@@ -83,6 +89,5 @@ class SessionIdInjectionMiddleware:
         
         await self.app(scope, wrapped_receive, send)
 
-
-# Middleware'i ekle (BaseHTTPMiddleware YERINE bunu kullan)
-app.add_middleware(SessionIdInjectionMiddleware)
+# BURADAN SONRA HİÇBİR ŞEY OLMAMALI!
+# app.add_middleware() çağrısı main.py'de yapılıyor
