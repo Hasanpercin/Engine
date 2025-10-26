@@ -15,7 +15,7 @@ from fastapi_mcp import FastApiMCP, AuthConfig
 
 from app.utils.rate_limit import init_rate_limiter
 from app.security import verify_bearer
-from app.middleware.session_injection import SessionIdInjectionMiddleware
+from app.middleware.session_injection import session_id_injection_middleware
 
 # --------- Lifespan ---------
 @asynccontextmanager
@@ -68,6 +68,10 @@ async def access_logger(request, call_next):
         dt,
     )
     return response
+
+# --------- MCP SessionId Injection Middleware ---------
+# HTTP middleware olarak ekle
+app.middleware("http")(session_id_injection_middleware)
 
 # --------- Sağlık ucu ---------
 try:
@@ -156,10 +160,6 @@ try:
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Electional router DISABLED: %s", e)
 
-# --------- MCP SessionId Injection - ASGI Wrap (MCP mount'tan ÖNCE) ---------
-# ASGI app'i wrap et - bu MCP'den ÖNCE olmalı ki MCP endpoint'leri de wrap edilsin
-app = SessionIdInjectionMiddleware(app)
-
 # --------- MCP (AI Agent tool'ları) ---------
 _MCP_INCLUDE_TAGS = [
     "lunar",
@@ -214,4 +214,4 @@ async def _on_startup():
     
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
     logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
-    logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED (ASGI wrapped)")
+    logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED (HTTP)")
