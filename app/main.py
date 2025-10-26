@@ -4,25 +4,26 @@ from __future__ import annotations
 import os
 import time
 import logging
-import json
 from contextlib import asynccontextmanager
 from typing import List
 
 from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
 
 # MCP
 from fastapi_mcp import FastApiMCP, AuthConfig
 
 from app.utils.rate_limit import init_rate_limiter
 from app.security import verify_bearer
+from app.middleware.session_injection import SessionIdInjectionMiddleware
 
 # --------- Lifespan ---------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Rate limiter'ı başlat (fail-open; Redis yoksa servis yine ayakta kalır)
     await init_rate_limiter(app)
     yield
+    # (Gerekirse kapanışta kaynakları temizleyebilirsin)
 
 # OpenAPI/dokümantasyon bayrağı
 _openapi_enabled = os.getenv("OPENAPI_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
@@ -36,7 +37,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# --------- CORS ---------
+# --------- CORS (opsiyonel) ---------
 _cors_origins_env = os.getenv("CORS_ORIGINS", "")
 if _cors_origins_env:
     origins: List[str] = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
@@ -50,7 +51,7 @@ if _cors_origins_env:
             max_age=86400,
         )
 
-# --------- Access log middleware ---------
+# --------- Hafif access log middleware ---------
 logger = logging.getLogger("engine.access")
 
 @app.middleware("http")
@@ -70,72 +71,11 @@ async def access_logger(request, call_next):
     )
     return response
 
-# --------- MCP SessionId Injection Middleware ---------
-class SessionIdInjectionMiddleware(BaseHTTPMiddleware):
-    """
-    X-Session-ID header'ından sessionId'yi okur ve MCP request body'sine ekler.
-    
-    Bu middleware, n8n gibi client'ların sessionId'yi header'da göndermesine izin verir,
-    ve otomatik olarak MCP params'a ekler.
-    """
-    async def dispatch(self, request: Request, call_next):
-        # Sadece MCP endpoint'leri için çalışsın
-        if request.url.path in ["/mcp", "/sse"] and request.method == "POST":
-            # Header'dan sessionId oku (case-insensitive)
-            session_id = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
-            
-            if session_id:
-                try:
-                    # Body'yi oku - bu ilk ve son okuma
-                    body_bytes = await request.body()
-                    
-                    if body_bytes:
-                        # JSON parse et
-                        body_json = json.loads(body_bytes.decode('utf-8'))
-                        
-                        # Eğer params varsa ve sessionId yoksa ekle
-                        if "params" in body_json and isinstance(body_json["params"], dict):
-                            if "sessionId" not in body_json["params"]:
-                                body_json["params"]["sessionId"] = session_id
-                                
-                                # Log injection (INFO seviyesinde görmek için)
-                                logging.getLogger("engine.mcp").info(
-                                    "✓ SessionId injected: %s for method=%s",
-                                    session_id,
-                                    body_json.get("method", "unknown")
-                                )
-                        
-                        # Güncellenmiş body'yi encode et
-                        modified_body = json.dumps(body_json).encode('utf-8')
-                        
-                        # Request'in receive fonksiyonunu override et
-                        # Bu, downstream handler'ların modified body'yi okumasını sağlar
-                        async def receive():
-                            return {
-                                "type": "http.request",
-                                "body": modified_body,
-                                "more_body": False,
-                            }
-                        
-                        request._receive = receive
-                        
-                except json.JSONDecodeError as e:
-                    logging.getLogger("engine.mcp").warning(
-                        "SessionId injection skipped: Invalid JSON body - %s", str(e)
-                    )
-                except Exception as e:
-                    logging.getLogger("engine.mcp").error(
-                        "SessionId injection error: %s", str(e), exc_info=True
-                    )
-        
-        # İşlemi devam ettir
-        response = await call_next(request)
-        return response
-
-# Middleware'i ekle (CORS ve access logger'dan SONRA, MCP mount'tan ÖNCE)
+# --------- SessionId Injection Middleware (ASGI seviyesinde) ---------
+# MCP mount'tan ÖNCE ekle!
 app.add_middleware(SessionIdInjectionMiddleware)
 
-# --------- Sağlık ucu ---------
+# --------- Sağlık ucu mutlaka mevcut olsun ---------
 try:
     from app.api.routers import health  # type: ignore
     app.include_router(health.router)
@@ -166,7 +106,7 @@ try:
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Synastry router DISABLED: %s", e)
 
-# Composite & Davison
+# Composite & Davison  (prefix VERME!)
 try:
     from app.api.routers import composite  # type: ignore
     app.include_router(composite.router, tags=["composite"])
@@ -218,11 +158,13 @@ except Exception as e:
 # Electional
 try:
     from app.api.routers import electional  # type: ignore
+    # electional.router içinde prefix tanımlı değil; burada veriyoruz
     app.include_router(electional.router, prefix="/electional", tags=["electional"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Electional router DISABLED: %s", e)
 
 # --------- MCP (AI Agent tool'ları) ---------
+# Sadece hesaplama uçlarını tool olarak aç (health/version gibi uçlar dışarıda kalsın)
 _MCP_INCLUDE_TAGS = [
     "lunar",
     "eclipses",
@@ -241,17 +183,17 @@ mcp = FastApiMCP(
     app,
     name="AstroCalc Engine MCP",
     description="AstroCalc hesaplama motoru için MCP tool seti",
-    include_tags=_MCP_INCLUDE_TAGS,
-    describe_all_responses=True,
-    describe_full_response_schema=True,
-    auth_config=AuthConfig(dependencies=[Depends(verify_bearer)]),
+    include_tags=_MCP_INCLUDE_TAGS,                # yalnızca bu tag'leri tool olarak göster
+    describe_all_responses=True,                   # tool açıklamalarına response çeşitlerini dahil et
+    describe_full_response_schema=True,            # JSON schema ayrıntılarını ekle
+    auth_config=AuthConfig(dependencies=[Depends(verify_bearer)]),  # <<< merkezî doğrulama
 )
 
-# Hem HTTP hem SSE taşımasını aç
+# Hem Streamable HTTP hem SSE taşımasını aç
 mcp.mount_http()   # -> /mcp
 mcp.mount_sse()    # -> /sse
 
-# --------- /version ---------
+# --------- /version (build bilgisi + route listesi) ---------
 ENGINE_VERSION = os.getenv("ENGINE_VERSION", "dev")
 GIT_SHA = os.getenv("GIT_SHA", "unknown")
 BUILD_TIME = os.getenv("BUILD_TIME", "")
@@ -273,7 +215,19 @@ async def _on_startup():
         logging.getLogger("engine.bootstrap").info("Rate limiter: ENABLED (redis=%s)", rl_url)
     else:
         logging.getLogger("engine.bootstrap").info("Rate limiter: DISABLED")
-    
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
     logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
-    logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED")
+    logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED (ASGI level)")
+```
+
+## Dosya Yapısı:
+```
+app/
+├── main.py                          ← Güncellenmiş
+├── middleware/
+│   ├── __init__.py                  ← Boş dosya (oluştur)
+│   └── session_injection.py         ← YENİ dosya
+├── api/
+│   └── routers/
+│       └── ...
+└── ...
