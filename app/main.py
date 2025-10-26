@@ -7,7 +7,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import List
 
-from fastapi import FastAPI, Depends, Request
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 # MCP
@@ -20,10 +20,8 @@ from app.middleware.session_injection import SessionIdInjectionMiddleware
 # --------- Lifespan ---------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Rate limiter'ı başlat (fail-open; Redis yoksa servis yine ayakta kalır)
     await init_rate_limiter(app)
     yield
-    # (Gerekirse kapanışta kaynakları temizleyebilirsin)
 
 # OpenAPI/dokümantasyon bayrağı
 _openapi_enabled = os.getenv("OPENAPI_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
@@ -37,7 +35,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# --------- CORS (opsiyonel) ---------
+# --------- CORS ---------
 _cors_origins_env = os.getenv("CORS_ORIGINS", "")
 if _cors_origins_env:
     origins: List[str] = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
@@ -51,7 +49,7 @@ if _cors_origins_env:
             max_age=86400,
         )
 
-# --------- Hafif access log middleware ---------
+# --------- Access log middleware ---------
 logger = logging.getLogger("engine.access")
 
 @app.middleware("http")
@@ -71,11 +69,11 @@ async def access_logger(request, call_next):
     )
     return response
 
-# --------- SessionId Injection Middleware (ASGI seviyesinde) ---------
-# MCP mount'tan ÖNCE ekle!
+# --------- MCP SessionId Injection Middleware ---------
+# Middleware'i ekle (CORS ve access logger'dan SONRA, MCP mount'tan ÖNCE)
 app.add_middleware(SessionIdInjectionMiddleware)
 
-# --------- Sağlık ucu mutlaka mevcut olsun ---------
+# --------- Sağlık ucu ---------
 try:
     from app.api.routers import health  # type: ignore
     app.include_router(health.router)
@@ -106,7 +104,7 @@ try:
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Synastry router DISABLED: %s", e)
 
-# Composite & Davison  (prefix VERME!)
+# Composite & Davison
 try:
     from app.api.routers import composite  # type: ignore
     app.include_router(composite.router, tags=["composite"])
@@ -158,13 +156,11 @@ except Exception as e:
 # Electional
 try:
     from app.api.routers import electional  # type: ignore
-    # electional.router içinde prefix tanımlı değil; burada veriyoruz
     app.include_router(electional.router, prefix="/electional", tags=["electional"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Electional router DISABLED: %s", e)
 
 # --------- MCP (AI Agent tool'ları) ---------
-# Sadece hesaplama uçlarını tool olarak aç (health/version gibi uçlar dışarıda kalsın)
 _MCP_INCLUDE_TAGS = [
     "lunar",
     "eclipses",
@@ -183,17 +179,17 @@ mcp = FastApiMCP(
     app,
     name="AstroCalc Engine MCP",
     description="AstroCalc hesaplama motoru için MCP tool seti",
-    include_tags=_MCP_INCLUDE_TAGS,                # yalnızca bu tag'leri tool olarak göster
-    describe_all_responses=True,                   # tool açıklamalarına response çeşitlerini dahil et
-    describe_full_response_schema=True,            # JSON schema ayrıntılarını ekle
-    auth_config=AuthConfig(dependencies=[Depends(verify_bearer)]),  # <<< merkezî doğrulama
+    include_tags=_MCP_INCLUDE_TAGS,
+    describe_all_responses=True,
+    describe_full_response_schema=True,
+    auth_config=AuthConfig(dependencies=[Depends(verify_bearer)]),
 )
 
-# Hem Streamable HTTP hem SSE taşımasını aç
+# Hem HTTP hem SSE taşımasını aç
 mcp.mount_http()   # -> /mcp
 mcp.mount_sse()    # -> /sse
 
-# --------- /version (build bilgisi + route listesi) ---------
+# --------- /version ---------
 ENGINE_VERSION = os.getenv("ENGINE_VERSION", "dev")
 GIT_SHA = os.getenv("GIT_SHA", "unknown")
 BUILD_TIME = os.getenv("BUILD_TIME", "")
@@ -215,19 +211,7 @@ async def _on_startup():
         logging.getLogger("engine.bootstrap").info("Rate limiter: ENABLED (redis=%s)", rl_url)
     else:
         logging.getLogger("engine.bootstrap").info("Rate limiter: DISABLED")
+    
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
     logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
-    logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED (ASGI level)")
-```
-
-## Dosya Yapısı:
-```
-app/
-├── main.py                          ← Güncellenmiş
-├── middleware/
-│   ├── __init__.py                  ← Boş dosya (oluştur)
-│   └── session_injection.py         ← YENİ dosya
-├── api/
-│   └── routers/
-│       └── ...
-└── ...
+    logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED")
