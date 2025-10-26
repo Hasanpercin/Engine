@@ -1,10 +1,5 @@
 # app/middleware/session_injection.py
-"""
-ASGI middleware for injecting X-Session-ID header into MCP request params.
 
-This middleware works at the ASGI level (not HTTP middleware level),
-which ensures reliable body modification without read conflicts.
-"""
 import json
 import logging
 from starlette.types import ASGIApp, Receive, Scope, Send
