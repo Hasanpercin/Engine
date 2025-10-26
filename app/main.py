@@ -11,21 +11,18 @@ from typing import List
 from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.datastructures import Headers
 
 # MCP
 from fastapi_mcp import FastApiMCP, AuthConfig
 
 from app.utils.rate_limit import init_rate_limiter
-from app.security import verify_bearer  # <<< merkezî güvenlik
+from app.security import verify_bearer
 
 # --------- Lifespan ---------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Rate limiter'ı başlat (fail-open; Redis yoksa servis yine ayakta kalır)
     await init_rate_limiter(app)
     yield
-    # (Gerekirse kapanışta kaynakları temizleyebilirsin)
 
 # OpenAPI/dokümantasyon bayrağı
 _openapi_enabled = os.getenv("OPENAPI_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
@@ -39,7 +36,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# --------- CORS (opsiyonel) ---------
+# --------- CORS ---------
 _cors_origins_env = os.getenv("CORS_ORIGINS", "")
 if _cors_origins_env:
     origins: List[str] = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
@@ -53,7 +50,7 @@ if _cors_origins_env:
             max_age=86400,
         )
 
-# --------- Hafif access log middleware ---------
+# --------- Access log middleware ---------
 logger = logging.getLogger("engine.access")
 
 @app.middleware("http")
@@ -78,13 +75,8 @@ class SessionIdInjectionMiddleware(BaseHTTPMiddleware):
     """
     X-Session-ID header'ından sessionId'yi okur ve MCP request body'sine ekler.
     
-    n8n gibi client'lar sessionId'yi header'da gönderdiğinde,
-    bu middleware otomatik olarak params.sessionId'ye ekler.
-    
-    Örnek:
-        Header: X-Session-ID: abc123
-        Body (önce): {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "natal_basic", "arguments": {...}}}
-        Body (sonra): {"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "natal_basic", "arguments": {...}, "sessionId": "abc123"}}
+    Bu middleware, n8n gibi client'ların sessionId'yi header'da göndermesine izin verir,
+    ve otomatik olarak MCP params'a ekler.
     """
     async def dispatch(self, request: Request, call_next):
         # Sadece MCP endpoint'leri için çalışsın
@@ -94,7 +86,7 @@ class SessionIdInjectionMiddleware(BaseHTTPMiddleware):
             
             if session_id:
                 try:
-                    # Body'yi oku
+                    # Body'yi oku - bu ilk ve son okuma
                     body_bytes = await request.body()
                     
                     if body_bytes:
@@ -106,41 +98,44 @@ class SessionIdInjectionMiddleware(BaseHTTPMiddleware):
                             if "sessionId" not in body_json["params"]:
                                 body_json["params"]["sessionId"] = session_id
                                 
-                                # Log injection for debugging
-                                logging.getLogger("engine.mcp").debug(
-                                    "Injected sessionId=%s into params for method=%s",
+                                # Log injection (INFO seviyesinde görmek için)
+                                logging.getLogger("engine.mcp").info(
+                                    "✓ SessionId injected: %s for method=%s",
                                     session_id,
                                     body_json.get("method", "unknown")
                                 )
                         
-                        # Güncellenmiş body'yi JSON'a çevir
-                        new_body = json.dumps(body_json).encode('utf-8')
+                        # Güncellenmiş body'yi encode et
+                        modified_body = json.dumps(body_json).encode('utf-8')
                         
-                        # Request'i yeni body ile yeniden oluştur
+                        # Request'in receive fonksiyonunu override et
+                        # Bu, downstream handler'ların modified body'yi okumasını sağlar
                         async def receive():
-                            return {"type": "http.request", "body": new_body, "more_body": False}
+                            return {
+                                "type": "http.request",
+                                "body": modified_body,
+                                "more_body": False,
+                            }
                         
-                        # Request'in _receive metodunu override et
                         request._receive = receive
                         
                 except json.JSONDecodeError as e:
-                    # JSON parse hatası durumunda log ve devam et
                     logging.getLogger("engine.mcp").warning(
-                        "SessionId injection failed: Invalid JSON in body: %s", str(e)
+                        "SessionId injection skipped: Invalid JSON body - %s", str(e)
                     )
                 except Exception as e:
-                    # Diğer hatalar için genel log
                     logging.getLogger("engine.mcp").error(
-                        "SessionId injection failed: %s", str(e), exc_info=True
+                        "SessionId injection error: %s", str(e), exc_info=True
                     )
         
+        # İşlemi devam ettir
         response = await call_next(request)
         return response
 
-# Middleware'i ekle (MCP mount'tan ÖNCE!)
+# Middleware'i ekle (CORS ve access logger'dan SONRA, MCP mount'tan ÖNCE)
 app.add_middleware(SessionIdInjectionMiddleware)
 
-# --------- Sağlık ucu mutlaka mevcut olsun ---------
+# --------- Sağlık ucu ---------
 try:
     from app.api.routers import health  # type: ignore
     app.include_router(health.router)
@@ -171,7 +166,7 @@ try:
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Synastry router DISABLED: %s", e)
 
-# Composite & Davison  (prefix VERME!)
+# Composite & Davison
 try:
     from app.api.routers import composite  # type: ignore
     app.include_router(composite.router, tags=["composite"])
@@ -223,13 +218,11 @@ except Exception as e:
 # Electional
 try:
     from app.api.routers import electional  # type: ignore
-    # electional.router içinde prefix tanımlı değil; burada veriyoruz
     app.include_router(electional.router, prefix="/electional", tags=["electional"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Electional router DISABLED: %s", e)
 
 # --------- MCP (AI Agent tool'ları) ---------
-# Sadece hesaplama uçlarını tool olarak aç (health/version gibi uçlar dışarıda kalsın)
 _MCP_INCLUDE_TAGS = [
     "lunar",
     "eclipses",
@@ -248,17 +241,17 @@ mcp = FastApiMCP(
     app,
     name="AstroCalc Engine MCP",
     description="AstroCalc hesaplama motoru için MCP tool seti",
-    include_tags=_MCP_INCLUDE_TAGS,                # yalnızca bu tag'leri tool olarak göster
-    describe_all_responses=True,                   # tool açıklamalarına response çeşitlerini dahil et
-    describe_full_response_schema=True,            # JSON schema ayrıntılarını ekle
-    auth_config=AuthConfig(dependencies=[Depends(verify_bearer)]),  # <<< merkezî doğrulama
+    include_tags=_MCP_INCLUDE_TAGS,
+    describe_all_responses=True,
+    describe_full_response_schema=True,
+    auth_config=AuthConfig(dependencies=[Depends(verify_bearer)]),
 )
 
-# Hem Streamable HTTP hem SSE taşımasını aç
+# Hem HTTP hem SSE taşımasını aç
 mcp.mount_http()   # -> /mcp
 mcp.mount_sse()    # -> /sse
 
-# --------- /version (build bilgisi + route listesi) ---------
+# --------- /version ---------
 ENGINE_VERSION = os.getenv("ENGINE_VERSION", "dev")
 GIT_SHA = os.getenv("GIT_SHA", "unknown")
 BUILD_TIME = os.getenv("BUILD_TIME", "")
@@ -280,6 +273,7 @@ async def _on_startup():
         logging.getLogger("engine.bootstrap").info("Rate limiter: ENABLED (redis=%s)", rl_url)
     else:
         logging.getLogger("engine.bootstrap").info("Rate limiter: DISABLED")
+    
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
     logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
     logging.getLogger("engine.bootstrap").info("SessionId injection middleware: ENABLED")
