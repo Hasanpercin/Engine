@@ -12,19 +12,16 @@ from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
-# MCP
 from fastapi_mcp import FastApiMCP, AuthConfig
 
 from app.utils.rate_limit import init_rate_limiter
 from app.security import verify_bearer
 
-# --------- Lifespan ---------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_rate_limiter(app)
     yield
 
-# OpenAPI/dokümantasyon bayrağı
 _openapi_enabled = os.getenv("OPENAPI_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
 
 app = FastAPI(
@@ -36,7 +33,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# --------- CORS ---------
 _cors_origins_env = os.getenv("CORS_ORIGINS", "")
 if _cors_origins_env:
     origins: List[str] = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
@@ -50,119 +46,104 @@ if _cors_origins_env:
             max_age=86400,
         )
 
-# --------- MCP SessionId Logging Middleware ---------
 class SessionIdLoggingMiddleware(BaseHTTPMiddleware):
-    """
-    SessionId tracking for MCP/SSE requests.
-    Sadece log'lar - body manipulation YOK (AssertionError önlenir)
-    """
     async def dispatch(self, request: Request, call_next):
         logger = logging.getLogger("uvicorn.error")
         
-        # MCP/SSE endpoint'leri için sessionId log'la
         if request.url.path in ["/mcp", "/sse"] and request.method in ["POST", "GET"]:
             session_id = None
             
-            # Query parameter'dan oku
             session_id = request.query_params.get("sessionId")
             if session_id:
-                logger.info("🔍 SessionId [query]: %s on %s %s", 
-                           session_id, request.method, request.url.path)
+                logger.info("SessionId [query]: %s on %s %s", session_id, request.method, request.url.path)
             
-            # Header'dan oku (fallback)
             if not session_id:
                 session_id = request.headers.get("X-Session-ID") or request.headers.get("x-session-id")
                 if session_id:
-                    logger.info("🔍 SessionId [header]: %s on %s %s", 
-                               session_id, request.method, request.url.path)
+                    logger.info("SessionId [header]: %s on %s %s", session_id, request.method, request.url.path)
             
             if not session_id:
-                logger.warning("⚠️ No sessionId found on %s %s", 
-                             request.method, request.url.path)
+                logger.warning("No sessionId found on %s %s", request.method, request.url.path)
         
-        # Body manipulation YOK - direkt call_next
         response = await call_next(request)
         return response
 
 app.add_middleware(SessionIdLoggingMiddleware)
 
-# --------- Sağlık ucu ---------
 try:
-    from app.api.routers import health  # type: ignore
+    from app.api.routers import health
     app.include_router(health.router)
 except Exception:
     @app.get("/healthz")
     async def _healthz():
         return {"status": "ok"}
 
-# --------- Routers ---------
 try:
-    from app.api.routers import lunar  # type: ignore
+    from app.api.routers import lunar
     app.include_router(lunar.router, prefix="/lunar", tags=["lunar"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Lunar router DISABLED: %s", e)
 
 try:
-    from app.api.routers import eclipses  # type: ignore
+    from app.api.routers import eclipses
     app.include_router(eclipses.router, prefix="/eclipses", tags=["eclipses"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Eclipses router DISABLED: %s", e)
 
 try:
-    from app.api.routers import synastry  # type: ignore
+    from app.api.routers import synastry
     app.include_router(synastry.router, prefix="/synastry", tags=["synastry"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Synastry router DISABLED: %s", e)
 
 try:
-    from app.api.routers import composite  # type: ignore
+    from app.api.routers import composite
     app.include_router(composite.router, tags=["composite"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Composite router DISABLED: %s", e)
 
 try:
-    from app.api.routers import returns  # type: ignore
+    from app.api.routers import returns
     app.include_router(returns.router, prefix="/returns", tags=["returns"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Returns router DISABLED: %s", e)
 
 try:
-    from app.api.routers import profections  # type: ignore
+    from app.api.routers import profections
     app.include_router(profections.router, prefix="/profections", tags=["profections"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Profections router DISABLED: %s", e)
 
 try:
-    from app.api.routers import retrogrades  # type: ignore
+    from app.api.routers import retrogrades
     app.include_router(retrogrades.router, prefix="/retrogrades", tags=["retrogrades"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Retrogrades router DISABLED: %s", e)
 
 try:
-    from app.api.routers import progressions  # type: ignore
+    from app.api.routers import progressions
     app.include_router(progressions.router, prefix="/progressions", tags=["progressions"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Progressions router DISABLED: %s", e)
 
 try:
-    from app.api.routers import transits  # type: ignore
+    from app.api.routers import transits
     app.include_router(transits.router, prefix="/transits", tags=["transits"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Transits router DISABLED: %s", e)
 
 try:
-    from app.api.routers import natal  # type: ignore
+    from app.api.routers import natal
     app.include_router(natal.router, prefix="/natal", tags=["natal"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Natal router DISABLED: %s", e)
 
 try:
-    from app.api.routers import electional  # type: ignore
+    from app.api.routers import electional
     app.include_router(electional.router, prefix="/electional", tags=["electional"])
 except Exception as e:
     logging.getLogger("uvicorn.error").warning("Electional router DISABLED: %s", e)
 
-# --------- MCP ---------
 _MCP_INCLUDE_TAGS = [
     "lunar",
     "eclipses",
@@ -190,7 +171,6 @@ mcp = FastApiMCP(
 mcp.mount_http()
 mcp.mount_sse()
 
-# --------- /version ---------
 ENGINE_VERSION = os.getenv("ENGINE_VERSION", "dev")
 GIT_SHA = os.getenv("GIT_SHA", "unknown")
 BUILD_TIME = os.getenv("BUILD_TIME", "")
@@ -204,7 +184,6 @@ def version():
         "routes": sorted([r.path for r in app.routes]),
     }
 
-# --------- Startup ---------
 @app.on_event("startup")
 async def _on_startup():
     rl_url = os.getenv("RATE_LIMIT_REDIS_URL")
@@ -215,19 +194,4 @@ async def _on_startup():
     
     logging.getLogger("engine.bootstrap").info("Routes: %s", ", ".join(sorted([r.path for r in app.routes])))
     logging.getLogger("engine.bootstrap").info("MCP endpoints: /mcp (HTTP), /sse (SSE)")
-    logging.getLogger("engine.bootstrap").info("SessionId tracking: query param + header (logging only)")
-```
-
-## Ana Değişiklikler:
-
-1. ✅ **Class adı değişti**: `SessionIdInjectionMiddleware` → `SessionIdLoggingMiddleware`
-2. ✅ **Body manipulation KALDIRILDI** - AssertionError olmaz artık!
-3. ✅ **Sadece sessionId log'lanıyor** - tracking için
-4. ✅ **Daha temiz kod** - gereksiz try/catch blokları yok
-5. ✅ **Performance artışı** - body okuma/yazma overhead'i yok
-
-## Neden Hala Çalışacak?
-
-n8n zaten sessionId'yi **query parameter** olarak gönderiyor:
-```
-https://engine.hasanpercin.xyz/sse?sessionId=xxx
+    logging.getLogger("engine.bootstrap").info("SessionId tracking: query param + header")
